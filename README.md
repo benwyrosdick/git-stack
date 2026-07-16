@@ -77,9 +77,9 @@ git-stack sync wms-batching --onto-trunk --push   # also absorb latest main
 | `r` / `R` | Restack / restack `--onto-trunk` |
 | `s` / `S` | Sync / sync `--onto-trunk` |
 | `d` | Dry-run sync |
-| `p` | Open/retarget PR |
+| `p` | Push (`--force-with-lease`) |
 | `c` | Create child branch |
-| `P` | Push (`--force-with-lease`) |
+| `P` | Open/retarget PR |
 | `f` | Fetch origin |
 | `?` | Help |
 | `q` | Quit |

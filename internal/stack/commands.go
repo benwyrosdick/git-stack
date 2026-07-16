@@ -565,7 +565,10 @@ type BranchInfo struct {
 }
 
 // List returns stack tree info under root (or all stacks if root empty).
+// When root is empty, the default branch (trunk) is included first so its
+// remote status is visible alongside stacked branches.
 func (e *Engine) List(root string) ([]BranchInfo, error) {
+	trunk := e.Repo.DefaultBranch()
 	var list []string
 	if root != "" {
 		if !e.Repo.RefExists(root) {
@@ -583,6 +586,11 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 			return nil, err
 		}
 		seen := map[string]bool{}
+		// Always show trunk first when listing everything.
+		if e.Repo.RefExists(trunk) {
+			list = append(list, trunk)
+			seen[trunk] = true
+		}
 		for _, line := range all {
 			if !strings.Contains(line, ".") {
 				continue
@@ -597,13 +605,25 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 				list = append(list, line)
 			}
 		}
-		if len(list) == 0 {
-			e.info("no dot-stacked local branches (e.g. feature.ui)")
-			return nil, nil
+		if len(list) == 0 || (len(list) == 1 && list[0] == trunk) {
+			// Only trunk (or empty): still useful for remote status; note if no stacks.
+			if len(list) <= 1 {
+				e.info("no dot-stacked local branches (e.g. feature.ui)")
+			}
+			if len(list) == 0 {
+				return nil, nil
+			}
 		}
+		// Keep trunk first; sort the rest.
+		rest := list[1:]
+		sort.Strings(rest)
+		list = append([]string{list[0]}, rest...)
 	}
 
-	sort.Strings(list)
+	if root != "" {
+		sort.Strings(list)
+	}
+
 	var infos []BranchInfo
 	for _, b := range list {
 		parent := e.ParentOf(b)
@@ -615,7 +635,16 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 		}
 		own := "?"
 		status := StatusMissingParent
-		if e.Repo.RefExists(parent) {
+		depth := BranchDepth(b)
+		displayParent := parent
+
+		if e.IsTrunk(b) {
+			// Trunk has no stack parent; surface remote status, not restack.
+			displayParent = "—"
+			own = "0"
+			status = StatusOK
+			depth = 0
+		} else if e.Repo.RefExists(parent) {
 			pref, _ := e.Repo.ResolveRef(parent)
 			bref, _ := e.Repo.ResolveRef(b)
 			if n, err := e.Repo.RevListCount(pref + ".." + bref); err == nil {
@@ -631,13 +660,17 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 		if e.Repo.LocalBranchExists(b) {
 			rel = e.Repo.RemoteRelationOf(b)
 		}
+		// When trunk is shown at depth 0, indent stack bases under it.
+		if root == "" && !e.IsTrunk(b) && e.Repo.RefExists(trunk) {
+			depth = BranchDepth(b) // bases=1, children=2+ → indent relative to trunk
+		}
 		infos = append(infos, BranchInfo{
 			Name:       b,
-			Parent:     parent,
+			Parent:     displayParent,
 			ShortSHA:   short,
 			OwnCommits: own,
 			Status:     status,
-			Depth:      BranchDepth(b),
+			Depth:      depth,
 			Remote:     rel,
 		})
 	}
@@ -647,15 +680,12 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 // FormatList prints ls-style lines.
 func FormatList(root string, infos []BranchInfo) string {
 	var b strings.Builder
-	rootDepth := 1
+	rootDepth := 0
 	if root != "" {
 		rootDepth = BranchDepth(root)
 	}
 	for _, info := range infos {
-		indent := info.Depth - 1
-		if root != "" {
-			indent = info.Depth - rootDepth
-		}
+		indent := info.Depth - rootDepth
 		if indent < 0 {
 			indent = 0
 		}

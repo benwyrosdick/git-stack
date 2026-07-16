@@ -342,7 +342,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return doneMsg{msg: "fetched origin"}
 		}
-	case "P":
+	case "p":
 		if len(m.infos) == 0 {
 			return m, nil
 		}
@@ -355,7 +355,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return doneMsg{msg: "pushed " + b}
 		}
-	case "p":
+	case "P":
 		if len(m.infos) == 0 {
 			return m, nil
 		}
@@ -514,9 +514,9 @@ func (m model) View() string {
 		"r", "restack",
 		"s", "sync",
 		"R/S", "onto-trunk",
-		"p", "pr",
+		"p", "push",
 		"c", "create",
-		"P", "push",
+		"P", "pr",
 		"f", "fetch",
 		"d", "dry-run",
 		"?", "help",
@@ -649,8 +649,8 @@ func helpView() string {
 	b.WriteString(helpLine("S", "sync --onto-trunk") + "\n")
 	b.WriteString(helpLine("d", "dry-run sync plan") + "\n")
 	b.WriteString(helpLine("c", "create child (suffix prompt)") + "\n")
-	b.WriteString(helpLine("P", "push selected (force-with-lease)") + "\n")
-	b.WriteString(helpLine("p", "create/retarget PR (gh)") + "\n")
+	b.WriteString(helpLine("p", "push selected (force-with-lease)") + "\n")
+	b.WriteString(helpLine("P", "create/retarget PR (gh)") + "\n")
 	b.WriteString(helpLine("f", "fetch origin") + "\n")
 	b.WriteString(helpLine("ctrl+r", "refresh list") + "\n\n")
 	b.WriteString(section("Other"))

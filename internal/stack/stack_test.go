@@ -441,8 +441,14 @@ func TestList(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(infos) < 2 {
-			t.Fatalf("expected stack rows, got %d", len(infos))
+		if len(infos) < 3 {
+			t.Fatalf("expected trunk + stack rows, got %d: %+v", len(infos), infos)
+		}
+		if infos[0].Name != "main" {
+			t.Fatalf("trunk should be first, got %s", infos[0].Name)
+		}
+		if infos[0].Parent != "—" {
+			t.Fatalf("trunk parent display: %q", infos[0].Parent)
 		}
 		found := false
 		for _, i := range infos {
