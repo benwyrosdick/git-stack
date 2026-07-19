@@ -65,6 +65,59 @@ func (e *Engine) DeleteLocal(opts DeleteOpts) error {
 	return nil
 }
 
+// Pull fetches origin and fast-forwards the local branch to origin/<branch>.
+// Refuses if diverged or ahead (no merge/rebase). Safe FF-only pull.
+func (e *Engine) Pull(branch string) error {
+	if branch == "" {
+		var err error
+		branch, err = e.Repo.CurrentBranch()
+		if err != nil {
+			return err
+		}
+	}
+	if !e.Repo.LocalBranchExists(branch) {
+		return fmt.Errorf("local branch does not exist: %s", branch)
+	}
+	if err := e.Repo.RequireNoRebase(); err != nil {
+		return err
+	}
+	// Pulling the checked-out branch with a dirty tree is unsafe for merge;
+	// FF of non-current branch via branch -f is OK with dirty tree, but stay
+	// consistent and refuse dirty when HEAD is the target.
+	if cur, err := e.Repo.CurrentBranch(); err == nil && cur == branch {
+		if err := e.Repo.RequireClean(); err != nil {
+			return err
+		}
+	}
+
+	if err := e.FetchIfNeeded(false); err != nil {
+		return err
+	}
+	if !e.Repo.OriginBranchExists(branch) {
+		return fmt.Errorf("no origin/%s to pull from (push the branch first or check the name)", branch)
+	}
+
+	rel := e.Repo.RemoteRelationOf(branch)
+	switch rel {
+	case git.RelInSync:
+		e.info("%s already in-sync with origin", branch)
+		return nil
+	case git.RelBehind:
+		if err := e.Repo.FFBranch(branch); err != nil {
+			return err
+		}
+		short, _ := e.Repo.ShortSHA("refs/remotes/origin/" + branch)
+		e.info("pulled %s → origin/%s (%s)", branch, branch, short)
+		return nil
+	case git.RelAhead:
+		return fmt.Errorf("%s is ahead of origin (nothing to pull; push if you want to publish)", branch)
+	case git.RelDiverged:
+		return fmt.Errorf("%s\n\npull is FF-only; resolve divergence first", e.DivergePlaybook(branch))
+	default:
+		return fmt.Errorf("cannot pull %s (remote relation: %s)", branch, rel)
+	}
+}
+
 // Parent prints inferred parent of branch (default: current).
 func (e *Engine) Parent(branch string) (string, error) {
 	if branch == "" {

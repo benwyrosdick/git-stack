@@ -88,6 +88,7 @@ Trunk is never absorbed unless `--onto-trunk`.
 | `P` | Open/retarget PR |
 | `c` | Create child (suffix prompt) |
 | `f` | Fetch origin |
+| `F` | Pull selected (fetch + FF-only) |
 | `ctrl+r` | Refresh list + PR parents |
 | `?` | Help |
 | `q` | Quit |

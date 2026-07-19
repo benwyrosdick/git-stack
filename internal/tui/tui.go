@@ -28,6 +28,11 @@ var (
 	errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	logStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 	curStyle = lipgloss.NewStyle().Bold(true)
+	// Remote relation (local vs origin).
+	relInSyncStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))  // green
+	relBehindStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))  // yellow
+	relDivergedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // orange
+	relAheadStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))  // blue
 )
 
 func statusStyled(s stack.BranchStatus) string {
@@ -40,6 +45,27 @@ func statusStyled(s stack.BranchStatus) string {
 		return missStyle.Render("[" + string(s) + "]")
 	default:
 		return "[" + string(s) + "]"
+	}
+}
+
+func remoteStyled(r git.RemoteRelation) string {
+	s := string(r)
+	if s == "" {
+		return ""
+	}
+	switch r {
+	case git.RelInSync:
+		return relInSyncStyle.Render(s)
+	case git.RelBehind:
+		return relBehindStyle.Render(s)
+	case git.RelDiverged:
+		return relDivergedStyle.Render(s)
+	case git.RelAhead:
+		return relAheadStyle.Render(s)
+	case git.RelNone:
+		return dimStyle.Render(s)
+	default:
+		return dimStyle.Render(s)
 	}
 }
 
@@ -356,6 +382,20 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return doneMsg{msg: "fetched origin"}
 		}
+	case "F":
+		if len(m.infos) == 0 {
+			return m, nil
+		}
+		b := m.infos[m.cursor].Name
+		m.busy = true
+		m.status = "pulling " + b
+		return m, func() tea.Msg {
+			err := m.eng.Pull(b)
+			if err != nil {
+				return doneMsg{err: err}
+			}
+			return doneMsg{msg: "pulled " + b}
+		}
 	case "p":
 		if len(m.infos) == 0 {
 			return m, nil
@@ -517,10 +557,10 @@ func (m model) View() string {
 			}
 
 			tree := dimStyle.Render(info.TreePrefix)
-			// Status colors always applied — never overridden by selection.
+			// Status / remote colors always applied — never overridden by selection.
 			line := marker + tree + name + "  " + sha + "  " + own + "  " +
 				statusStyled(info.Status) + "  " +
-				dimStyle.Render(string(info.Remote)) + head
+				remoteStyled(info.Remote) + head
 			b.WriteString(line + "\n")
 		}
 	}
@@ -557,6 +597,7 @@ func (m model) View() string {
 		"d", "delete",
 		"D", "force-del",
 		"f", "fetch",
+		"F", "pull",
 		"?", "help",
 		"q", "quit",
 	))
@@ -691,14 +732,20 @@ func helpView() string {
 	b.WriteString(helpLine("p", "push selected (force-with-lease)") + "\n")
 	b.WriteString(helpLine("P", "create/retarget PR (gh)") + "\n")
 	b.WriteString(helpLine("f", "fetch origin") + "\n")
+	b.WriteString(helpLine("F", "pull selected (fetch + FF-only)") + "\n")
 	b.WriteString(helpLine("ctrl+r", "refresh list") + "\n\n")
 	b.WriteString(section("Other"))
 	b.WriteString(helpLine("?", "toggle this help") + "\n")
 	b.WriteString(helpLine("q", "quit") + "\n\n")
-	b.WriteString(helpStyle.Render("  Status: ") +
+	b.WriteString(helpStyle.Render("  Stack: ") +
 		okStyle.Render("ok") + helpStyle.Render(" · ") +
 		needStyle.Render("needs-restack") + helpStyle.Render(" · ") +
-		missStyle.Render("missing-parent") + "\n\n")
+		missStyle.Render("missing-parent") + "\n")
+	b.WriteString(helpStyle.Render("  Remote: ") +
+		relInSyncStyle.Render("in-sync") + helpStyle.Render(" · ") +
+		relBehindStyle.Render("behind") + helpStyle.Render(" · ") +
+		relDivergedStyle.Render("diverged") + helpStyle.Render(" · ") +
+		relAheadStyle.Render("ahead") + "\n\n")
 	b.WriteString(helpStyle.Render("  Press ") + keyStyle.Render("?") +
 		helpStyle.Render(" or ") + keyStyle.Render("esc") +
 		helpStyle.Render(" to close.") + "\n")
