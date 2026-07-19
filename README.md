@@ -82,7 +82,8 @@ Trunk is never absorbed unless `--onto-trunk`.
 | `enter` | Checkout |
 | `r` / `R` | Restack / restack `--onto-trunk` |
 | `s` / `S` | Sync / sync `--onto-trunk` |
-| `d` | Preview sync plan (dry-run) |
+| `d` | Safe delete local branch (`git branch -d`) |
+| `D` | Force-delete local branch (`git branch -D`) |
 | `p` | Push (`--force-with-lease`) |
 | `P` | Open/retarget PR |
 | `c` | Create child (suffix prompt) |

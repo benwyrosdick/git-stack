@@ -344,7 +344,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "S":
 		return m.runSync(true, false)
 	case "d":
-		return m.runSync(false, true)
+		return m.runDelete(false)
+	case "D":
+		return m.runDelete(true)
 	case "f":
 		m.busy = true
 		m.status = "fetching origin…"
@@ -447,6 +449,31 @@ func (m model) runSync(ontoTrunk, dryRun bool) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m model) runDelete(force bool) (tea.Model, tea.Cmd) {
+	if len(m.infos) == 0 {
+		return m, nil
+	}
+	b := m.infos[m.cursor].Name
+	m.busy = true
+	if force {
+		m.status = "force-deleting " + b
+	} else {
+		m.status = "deleting " + b
+	}
+	return m, func() tea.Msg {
+		err := m.eng.DeleteLocal(stack.DeleteOpts{Branch: b, Force: force})
+		if err != nil {
+			return doneMsg{err: err}
+		}
+		// Prefer landing cursor on parent after reload.
+		msg := "deleted " + b
+		if force {
+			msg = "force-deleted " + b
+		}
+		return doneMsg{msg: msg}
+	}
+}
+
 func (m model) View() string {
 	if m.showError && m.errMsg != "" {
 		return errorView(m.errMsg, m.width, m.height, m.errScroll)
@@ -458,17 +485,10 @@ func (m model) View() string {
 	b.WriteString(titleStyle.Render("git-stack") + dimStyle.Render("  stacked branches") + "\n\n")
 
 	if len(m.infos) == 0 {
-		b.WriteString(dimStyle.Render("  no dot-stacked local branches (e.g. feature.ui)") + "\n")
-		b.WriteString(dimStyle.Render("  create one: git-stack create feature && git-stack create feature.ui") + "\n")
+		b.WriteString(dimStyle.Render("  no stacked local branches") + "\n")
+		b.WriteString(dimStyle.Render("  create one: git-stack create feature && git-stack create feature.ui --from feature") + "\n")
 	} else {
-		minDepth := m.infos[0].Depth
-		for _, info := range m.infos {
-			if info.Depth < minDepth {
-				minDepth = info.Depth
-			}
-		}
 		for i, info := range m.infos {
-			indent := strings.Repeat("  ", info.Depth-minDepth)
 			selected := i == m.cursor
 			// Chevron like git-recent: ">" on selection, space otherwise.
 			marker := "  "
@@ -496,8 +516,9 @@ func (m model) View() string {
 				head = dimStyle.Render("  ← HEAD")
 			}
 
+			tree := dimStyle.Render(info.TreePrefix)
 			// Status colors always applied — never overridden by selection.
-			line := marker + indent + name + "  " + sha + "  " + own + "  " +
+			line := marker + tree + name + "  " + sha + "  " + own + "  " +
 				statusStyled(info.Status) + "  " +
 				dimStyle.Render(string(info.Remote)) + head
 			b.WriteString(line + "\n")
@@ -533,8 +554,9 @@ func (m model) View() string {
 		"p", "push",
 		"c", "create",
 		"P", "pr",
+		"d", "delete",
+		"D", "force-del",
 		"f", "fetch",
-		"d", "dry-run",
 		"?", "help",
 		"q", "quit",
 	))
@@ -663,7 +685,8 @@ func helpView() string {
 	b.WriteString(helpLine("R", "restack --onto-trunk") + "\n")
 	b.WriteString(helpLine("s", "sync stack under selected") + "\n")
 	b.WriteString(helpLine("S", "sync --onto-trunk") + "\n")
-	b.WriteString(helpLine("d", "dry-run sync plan") + "\n")
+	b.WriteString(helpLine("d", "delete local branch (git branch -d)") + "\n")
+	b.WriteString(helpLine("D", "force-delete local branch (git branch -D)") + "\n")
 	b.WriteString(helpLine("c", "create child (suffix prompt)") + "\n")
 	b.WriteString(helpLine("p", "push selected (force-with-lease)") + "\n")
 	b.WriteString(helpLine("P", "create/retarget PR (gh)") + "\n")

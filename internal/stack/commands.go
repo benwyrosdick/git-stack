@@ -9,6 +9,62 @@ import (
 	"github.com/benwyrosdick/git-stack/internal/git"
 )
 
+// DeleteOpts for DeleteLocal.
+type DeleteOpts struct {
+	Branch string
+	Force  bool // git branch -D instead of -d
+}
+
+// DeleteLocal deletes a local branch (-d or -D). Refuses trunk.
+// If the branch is checked out, switches to its parent (or trunk) first.
+// Clears local stack parent metadata for the deleted branch.
+func (e *Engine) DeleteLocal(opts DeleteOpts) error {
+	branch := opts.Branch
+	if branch == "" {
+		return fmt.Errorf("branch required")
+	}
+	if e.IsTrunk(branch) {
+		return fmt.Errorf("refusing to delete trunk branch %s", branch)
+	}
+	if !e.Repo.LocalBranchExists(branch) {
+		return fmt.Errorf("local branch does not exist: %s", branch)
+	}
+
+	// Switch away if needed.
+	if cur, err := e.Repo.CurrentBranch(); err == nil && cur == branch {
+		dest := e.ParentOf(branch)
+		if dest == branch || !e.Repo.LocalBranchExists(dest) {
+			dest = e.Repo.DefaultBranch()
+		}
+		if !e.Repo.LocalBranchExists(dest) {
+			return fmt.Errorf("cannot leave branch %s: no checkout target", branch)
+		}
+		e.info("switching to %s before delete", dest)
+		if err := e.Repo.Switch(dest); err != nil {
+			return err
+		}
+	}
+
+	var err error
+	if opts.Force {
+		e.info("force-deleting local branch %s", branch)
+		err = e.Repo.ForceDeleteBranch(branch)
+	} else {
+		e.info("deleting local branch %s (safe)", branch)
+		err = e.Repo.DeleteBranch(branch)
+	}
+	if err != nil {
+		if !opts.Force {
+			return fmt.Errorf("%w\n\n  Branch is not fully merged. Use force delete (D) if you are sure:\n    git branch -D %s", err, branch)
+		}
+		return err
+	}
+	_ = e.Repo.UnsetStackParent(branch)
+	e.clearPRParentEntry(branch)
+	e.info("deleted %s", branch)
+	return nil
+}
+
 // Parent prints inferred parent of branch (default: current).
 func (e *Engine) Parent(branch string) (string, error) {
 	if branch == "" {
@@ -570,6 +626,8 @@ type BranchInfo struct {
 	Status     BranchStatus
 	Depth      int
 	Remote     git.RemoteRelation
+	// TreePrefix is ASCII connectors, e.g. "│   ├── " (set by OrderAsTree).
+	TreePrefix string
 }
 
 // List returns stack tree info under root (or all stacks if root empty).
@@ -677,7 +735,7 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 			Remote:     rel,
 		})
 	}
-	return infos, nil
+	return OrderAsTree(infos), nil
 }
 
 // inStackGraph reports whether branch participates in a stack (not only trunk).
@@ -709,27 +767,16 @@ func (e *Engine) inStackGraph(b string) bool {
 	return err == nil && len(kids) > 0
 }
 
-// FormatList prints ls-style lines.
+// FormatList prints ls-style lines with ASCII tree connectors.
 func FormatList(root string, infos []BranchInfo) string {
-	var b strings.Builder
-	rootDepth := 0
-	if root != "" && len(infos) > 0 {
-		rootDepth = infos[0].Depth
-		for _, info := range infos {
-			if info.Name == root {
-				rootDepth = info.Depth
-				break
-			}
-		}
+	// Ensure prefixes exist even if caller skipped OrderAsTree.
+	if len(infos) > 0 && infos[0].TreePrefix == "" && len(infos) > 1 {
+		infos = OrderAsTree(infos)
 	}
+	var b strings.Builder
 	for _, info := range infos {
-		indent := info.Depth - rootDepth
-		if indent < 0 {
-			indent = 0
-		}
-		pad := strings.Repeat("  ", indent)
 		fmt.Fprintf(&b, "%s%s  (base: %s)  %s  +%s commits  [%s]\n",
-			pad, info.Name, info.Parent, info.ShortSHA, info.OwnCommits, info.Status)
+			info.TreePrefix, info.Name, info.Parent, info.ShortSHA, info.OwnCommits, info.Status)
 	}
 	return b.String()
 }

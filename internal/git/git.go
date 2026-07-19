@@ -273,6 +273,16 @@ func (r *Repo) Switch(name string) error {
 	return r.runOK("switch", name)
 }
 
+// DeleteBranch runs git branch -d (safe; refuses unmerged).
+func (r *Repo) DeleteBranch(name string) error {
+	return r.runOK("branch", "-d", name)
+}
+
+// ForceDeleteBranch runs git branch -D (force local delete).
+func (r *Repo) ForceDeleteBranch(name string) error {
+	return r.runOK("branch", "-D", name)
+}
+
 // RebaseOnto runs: git rebase --onto onto upstream branch
 func (r *Repo) RebaseOnto(onto, upstream, branch string) error {
 	return r.RunInteractive("rebase", "--onto", onto, upstream, branch)
