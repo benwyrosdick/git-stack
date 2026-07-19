@@ -13,60 +13,98 @@ import (
 	"github.com/benwyrosdick/git-stack/internal/stack"
 )
 
-var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	// Selected row: chevron + accent text (no background bar), git-recent style.
-	chevronStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true)
-	selNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true)
-	okStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	needStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	missStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	// Keys stand out from dim help labels (cyan/bright).
-	keyStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
-	errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	logStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	curStyle = lipgloss.NewStyle().Bold(true)
-	// Remote relation (local vs origin).
-	relInSyncStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))  // green
-	relBehindStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))  // yellow
-	relDivergedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208")) // orange
-	relAheadStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))  // blue
+// Palette — muted selection bar; HEAD uses the bright accent.
+const (
+	colAccent   = "13" // magenta — checked-out branch
+	colTitle    = "12" // blue
+	colKey      = "14" // cyan
+	colGreen    = "10"
+	colYellow   = "11"
+	colRed      = "9"
+	colOrange   = "208"
+	colDim      = "8"
+	colMuted    = "245"
+	colFg       = "252"
+	colSelBg    = "236" // muted selection background
+	colHeadMark = "13"
 )
 
-func statusStyled(s stack.BranchStatus) string {
+var (
+	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colTitle))
+	// HEAD (checked out): accent name + ● (selection uses muted bar instead).
+	headNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colAccent)).Bold(true)
+	headMarkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colHeadMark)).Bold(true)
+	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color(colDim))
+	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color(colDim))
+	keyStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colKey))
+	errStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color(colRed))
+	logStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	sepStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	// Selection row base (muted background).
+	selBg = lipgloss.Color(colSelBg)
+)
+
+func styleOn(bg *lipgloss.Color, fg string, bold bool) lipgloss.Style {
+	s := lipgloss.NewStyle().Foreground(lipgloss.Color(fg))
+	if bold {
+		s = s.Bold(true)
+	}
+	if bg != nil {
+		s = s.Background(*bg)
+	}
+	return s
+}
+
+func statusStyled(s stack.BranchStatus, bg *lipgloss.Color) string {
+	label := "[" + string(s) + "]"
 	switch s {
 	case stack.StatusOK:
-		return okStyle.Render("[" + string(s) + "]")
+		return styleOn(bg, colGreen, false).Render(label)
 	case stack.StatusNeedsRestack:
-		return needStyle.Render("[" + string(s) + "]")
+		return styleOn(bg, colYellow, false).Render(label)
 	case stack.StatusMissingParent:
-		return missStyle.Render("[" + string(s) + "]")
+		return styleOn(bg, colRed, false).Render(label)
 	default:
-		return "[" + string(s) + "]"
+		return styleOn(bg, colMuted, false).Render(label)
 	}
 }
 
-func remoteStyled(r git.RemoteRelation) string {
+func remoteStyled(r git.RemoteRelation, bg *lipgloss.Color) string {
 	s := string(r)
 	if s == "" {
 		return ""
 	}
 	switch r {
 	case git.RelInSync:
-		return relInSyncStyle.Render(s)
+		return styleOn(bg, colGreen, false).Render(s)
 	case git.RelBehind:
-		return relBehindStyle.Render(s)
+		return styleOn(bg, colYellow, false).Render(s)
 	case git.RelDiverged:
-		return relDivergedStyle.Render(s)
+		return styleOn(bg, colOrange, false).Render(s)
 	case git.RelAhead:
-		return relAheadStyle.Render(s)
+		return styleOn(bg, colTitle, false).Render(s)
 	case git.RelNone:
-		return dimStyle.Render(s)
+		return styleOn(bg, colDim, false).Render(s)
 	default:
-		return dimStyle.Render(s)
+		return styleOn(bg, colDim, false).Render(s)
 	}
+}
+
+// padRow extends content to width with spaces so a background fills the line.
+func padRow(content string, width int, bg *lipgloss.Color) string {
+	if width <= 0 {
+		return content
+	}
+	w := lipgloss.Width(content)
+	if w < width {
+		pad := strings.Repeat(" ", width-w)
+		if bg != nil {
+			content += lipgloss.NewStyle().Background(*bg).Render(pad)
+		} else {
+			content += pad
+		}
+	}
+	return content
 }
 
 // helpKeys colors key chords in a help string.
@@ -186,8 +224,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = msg.err.Error()
 			return m, nil
 		}
+		prev := ""
+		if m.cursor >= 0 && m.cursor < len(m.infos) {
+			prev = m.infos[m.cursor].Name
+		}
 		m.infos = msg.infos
 		m.current = msg.current
+		// Keep selection on the same branch after reload; else land on HEAD.
+		m.cursor = 0
+		for i, info := range m.infos {
+			if prev != "" && info.Name == prev {
+				m.cursor = i
+				break
+			}
+			if prev == "" && info.Name == m.current {
+				m.cursor = i
+			}
+		}
 		if m.cursor >= len(m.infos) {
 			m.cursor = max(0, len(m.infos)-1)
 		}
@@ -521,54 +574,36 @@ func (m model) View() string {
 		return helpView()
 	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("git-stack") + dimStyle.Render("  stacked branches") + "\n\n")
+
+	// Header
+	count := ""
+	if n := len(m.infos); n > 0 {
+		count = dimStyle.Render(fmt.Sprintf("  %d branches", n))
+	}
+	b.WriteString(titleStyle.Render("git-stack") + dimStyle.Render("  stacks") + count + "\n")
+	if m.width > 0 {
+		b.WriteString(sepStyle.Render(strings.Repeat("─", min(m.width, 80))) + "\n")
+	} else {
+		b.WriteString("\n")
+	}
 
 	if len(m.infos) == 0 {
-		b.WriteString(dimStyle.Render("  no stacked local branches") + "\n")
-		b.WriteString(dimStyle.Render("  create one: git-stack create feature && git-stack create feature.ui --from feature") + "\n")
+		b.WriteString(dimStyle.Render("  no stacked branches") + "\n")
+		b.WriteString(dimStyle.Render("  try: git-stack create feature && git-stack create child --from feature") + "\n")
 	} else {
 		for i, info := range m.infos {
-			selected := i == m.cursor
-			// Chevron like git-recent: ">" on selection, space otherwise.
-			marker := "  "
-			if selected {
-				marker = chevronStyle.Render(">") + " "
-			}
-
-			name := info.Name
-			switch {
-			case selected:
-				name = selNameStyle.Render(info.Name)
-			case info.Name == m.current:
-				name = curStyle.Render(info.Name)
-			}
-
-			sha := info.ShortSHA
-			own := "+" + info.OwnCommits
-			if selected {
-				sha = selNameStyle.Render(sha)
-				own = selNameStyle.Render(own)
-			}
-
-			head := ""
-			if info.Name == m.current {
-				head = dimStyle.Render("  ← HEAD")
-			}
-
-			tree := dimStyle.Render(info.TreePrefix)
-			// Status / remote colors always applied — never overridden by selection.
-			line := marker + tree + name + "  " + sha + "  " + own + "  " +
-				statusStyled(info.Status) + "  " +
-				remoteStyled(info.Remote) + head
-			b.WriteString(line + "\n")
+			b.WriteString(m.renderRow(i, info) + "\n")
 		}
 	}
 
 	b.WriteString("\n")
 	if m.input != inputNone {
-		b.WriteString(m.prompt + m.inputBuf + "█\n")
+		b.WriteString(keyStyle.Render("create") + " " + m.prompt + m.inputBuf + "█\n")
 	}
 
+	if m.width > 0 {
+		b.WriteString(sepStyle.Render(strings.Repeat("─", min(m.width, 80))) + "\n")
+	}
 	b.WriteString(helpKeys(
 		"j/k", "move",
 		"enter", "checkout",
@@ -578,10 +613,8 @@ func (m model) View() string {
 		"p", "push",
 		"c", "create",
 		"P", "pr",
-		"d", "delete",
-		"D", "force-del",
-		"f", "fetch",
-		"F", "pull",
+		"d/D", "delete",
+		"f/F", "fetch/pull",
 		"?", "help",
 		"q", "quit",
 	) + "\n")
@@ -599,6 +632,58 @@ func (m model) View() string {
 		}
 	}
 	return b.String()
+}
+
+// renderRow draws one branch line. Selection = chevron + muted full-row bg.
+// Checked-out branch uses the magenta accent (independent of selection).
+func (m model) renderRow(i int, info stack.BranchInfo) string {
+	selected := i == m.cursor
+	isHead := info.Name == m.current
+
+	var bg *lipgloss.Color
+	if selected {
+		c := selBg
+		bg = &c
+	}
+
+	// Chevron / gutter
+	var marker string
+	if selected {
+		marker = styleOn(bg, colAccent, true).Render(">") + styleOn(bg, colFg, false).Render(" ")
+	} else {
+		marker = styleOn(bg, colDim, false).Render("  ")
+	}
+
+	tree := styleOn(bg, colDim, false).Render(info.TreePrefix)
+
+	// Name: HEAD gets accent; selection relies on bg rather than recoloring.
+	var name string
+	switch {
+	case isHead:
+		name = styleOn(bg, colAccent, true).Render(info.Name)
+	case selected:
+		name = styleOn(bg, colFg, true).Render(info.Name)
+	default:
+		name = styleOn(bg, colFg, false).Render(info.Name)
+	}
+
+	sha := styleOn(bg, colMuted, false).Render(info.ShortSHA)
+	own := styleOn(bg, colMuted, false).Render("+" + info.OwnCommits)
+
+	head := ""
+	if isHead {
+		head = styleOn(bg, colAccent, true).Render("  ●")
+	}
+
+	gap := styleOn(bg, colFg, false).Render("  ")
+	line := marker + tree + name + gap + sha + gap + own + gap +
+		statusStyled(info.Status, bg) + gap +
+		remoteStyled(info.Remote, bg) + head
+
+	if selected {
+		line = padRow(line, m.width, bg)
+	}
+	return line
 }
 
 // errorLines wraps the full error into display lines.
@@ -735,14 +820,17 @@ func helpView() string {
 	b.WriteString(helpLine("?", "toggle this help") + "\n")
 	b.WriteString(helpLine("q", "quit") + "\n\n")
 	b.WriteString(helpStyle.Render("  Stack: ") +
-		okStyle.Render("ok") + helpStyle.Render(" · ") +
-		needStyle.Render("needs-restack") + helpStyle.Render(" · ") +
-		missStyle.Render("missing-parent") + "\n")
+		styleOn(nil, colGreen, false).Render("ok") + helpStyle.Render(" · ") +
+		styleOn(nil, colYellow, false).Render("needs-restack") + helpStyle.Render(" · ") +
+		styleOn(nil, colRed, false).Render("missing-parent") + "\n")
 	b.WriteString(helpStyle.Render("  Remote: ") +
-		relInSyncStyle.Render("in-sync") + helpStyle.Render(" · ") +
-		relBehindStyle.Render("behind") + helpStyle.Render(" · ") +
-		relDivergedStyle.Render("diverged") + helpStyle.Render(" · ") +
-		relAheadStyle.Render("ahead") + "\n\n")
+		styleOn(nil, colGreen, false).Render("in-sync") + helpStyle.Render(" · ") +
+		styleOn(nil, colYellow, false).Render("behind") + helpStyle.Render(" · ") +
+		styleOn(nil, colOrange, false).Render("diverged") + helpStyle.Render(" · ") +
+		styleOn(nil, colTitle, false).Render("ahead") + "\n")
+	b.WriteString(helpStyle.Render("  Cursor: ") +
+		styleOn(nil, colAccent, true).Render(">") + helpStyle.Render(" + muted bar  ·  HEAD: ") +
+		headNameStyle.Render("name") + headMarkStyle.Render(" ●") + "\n\n")
 	b.WriteString(helpStyle.Render("  Press ") + keyStyle.Render("?") +
 		helpStyle.Render(" or ") + keyStyle.Render("esc") +
 		helpStyle.Render(" to close.") + "\n")
