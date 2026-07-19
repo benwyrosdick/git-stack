@@ -194,10 +194,16 @@ func newModel(repo *git.Repo, offline, refresh bool) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return m.reload()
+	// On first load, if HEAD is missing from the stack list, force-refresh PR
+	// parents once — open PRs are often the only link for non-dot branches.
+	return m.reloadOpts(true)
 }
 
 func (m model) reload() tea.Cmd {
+	return m.reloadOpts(false)
+}
+
+func (m model) reloadOpts(retryMissingHEAD bool) tea.Cmd {
 	offline, refresh := m.offline, m.refresh
 	eng := m.eng
 	repo := m.repo
@@ -208,8 +214,23 @@ func (m model) reload() tea.Cmd {
 		})
 		infos, err := eng.List("")
 		cur, _ := repo.CurrentBranch()
+		if err == nil && retryMissingHEAD && !offline && !refresh && cur != "" && !branchInInfos(infos, cur) {
+			eng.InvalidateParentCache()
+			_ = eng.LoadParents(stack.LoadParentsOpts{Refresh: true})
+			infos, err = eng.List("")
+			// List may now include branches only linked via open PRs.
+		}
 		return loadedMsg{infos: infos, current: cur, err: err}
 	}
+}
+
+func branchInInfos(infos []stack.BranchInfo, name string) bool {
+	for _, info := range infos {
+		if info.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
