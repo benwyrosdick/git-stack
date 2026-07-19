@@ -6,21 +6,21 @@ import (
 )
 
 func TestUpsertStackSection_Prepend(t *testing.T) {
-	got := UpsertStackSection("## Summary\n\nhello", "**Stack**\n\n- `main`")
+	got := UpsertStackSection("## Summary\n\nhello", "## PR Stack\n\n- `main`")
 	if !strings.HasPrefix(got, StackSectionStart) {
 		t.Fatalf("expected section at top:\n%s", got)
 	}
 	if !strings.Contains(got, StackSectionEnd+"\n\n## Summary") {
 		t.Fatalf("expected end marker then user body:\n%s", got)
 	}
-	if !strings.Contains(got, "**Stack**") {
+	if !strings.Contains(got, "## PR Stack") {
 		t.Fatalf("missing stack content:\n%s", got)
 	}
 }
 
 func TestUpsertStackSection_Replace(t *testing.T) {
-	body := StackSectionStart + "\n**Stack**\n\n- old\n" + StackSectionEnd + "\n\nkeep me"
-	got := UpsertStackSection(body, "**Stack**\n\n- new")
+	body := StackSectionStart + "\n## PR Stack\n\n- old\n" + StackSectionEnd + "\n\nkeep me"
+	got := UpsertStackSection(body, "## PR Stack\n\n- new")
 	if strings.Contains(got, "old") {
 		t.Fatalf("old section not replaced:\n%s", got)
 	}
@@ -37,8 +37,8 @@ func TestUpsertStackSection_Replace(t *testing.T) {
 }
 
 func TestUpsertStackSection_EmptyBody(t *testing.T) {
-	got := UpsertStackSection("", "**Stack**\n\n- `x`")
-	want := StackSectionStart + "\n**Stack**\n\n- `x`\n" + StackSectionEnd + "\n"
+	got := UpsertStackSection("", "## PR Stack\n\n- `x`")
+	want := StackSectionStart + "\n## PR Stack\n\n- `x`\n" + StackSectionEnd + "\n"
 	if got != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -50,6 +50,9 @@ func TestFormatStackMarkdown(t *testing.T) {
 		"feat.b": {Number: 11, URL: "https://example.com/11", Head: "feat.b"},
 	}
 	got := FormatStackMarkdown(prs, []string{"main", "feat.a", "feat.b"}, "feat.b")
+	if !strings.HasPrefix(got, "## PR Stack\n") {
+		t.Fatalf("missing heading:\n%s", got)
+	}
 	if !strings.Contains(got, "`main`") {
 		t.Fatalf("missing trunk:\n%s", got)
 	}

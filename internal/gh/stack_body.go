@@ -56,7 +56,7 @@ func FormatStackMarkdown(prs map[string]PRInfo, branches []string, current strin
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("**Stack**\n")
+	b.WriteString("## PR Stack\n")
 	for _, name := range branches {
 		if name == "" {
 			continue
