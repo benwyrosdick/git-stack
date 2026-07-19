@@ -425,6 +425,38 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runDelete(false)
 	case "D":
 		return m.runDelete(true)
+	case "y":
+		if len(m.infos) == 0 {
+			return m, nil
+		}
+		name := m.infos[m.cursor].Name
+		if err := copyToClipboard(name); err != nil {
+			m.lastMsg = "copy failed: " + err.Error()
+			m.lastIsErr = true
+			return m, nil
+		}
+		m.lastMsg = "copied " + name
+		m.lastIsErr = false
+		return m, nil
+	case "Y":
+		if len(m.infos) == 0 {
+			return m, nil
+		}
+		sha := m.infos[m.cursor].ShortSHA
+		// Prefer full SHA when available.
+		if ref, err := m.repo.ResolveRef(m.infos[m.cursor].Name); err == nil {
+			if full, err := m.repo.RevParse(ref); err == nil && full != "" {
+				sha = full
+			}
+		}
+		if err := copyToClipboard(sha); err != nil {
+			m.lastMsg = "copy failed: " + err.Error()
+			m.lastIsErr = true
+			return m, nil
+		}
+		m.lastMsg = "copied " + truncateLine(sha, 16)
+		m.lastIsErr = false
+		return m, nil
 	case "f":
 		m.busy = true
 		m.status = "fetching origin…"
@@ -615,6 +647,7 @@ func (m model) View() string {
 		"P", "pr",
 		"d/D", "delete",
 		"f/F", "fetch/pull",
+		"y/Y", "copy name/sha",
 		"?", "help",
 		"q", "quit",
 	) + "\n")
@@ -815,6 +848,8 @@ func helpView() string {
 	b.WriteString(helpLine("P", "create/retarget PR (gh)") + "\n")
 	b.WriteString(helpLine("f", "fetch origin") + "\n")
 	b.WriteString(helpLine("F", "pull selected (fetch + FF-only)") + "\n")
+	b.WriteString(helpLine("y", "copy branch name to clipboard") + "\n")
+	b.WriteString(helpLine("Y", "copy full commit SHA to clipboard") + "\n")
 	b.WriteString(helpLine("ctrl+r", "refresh list") + "\n\n")
 	b.WriteString(section("Other"))
 	b.WriteString(helpLine("?", "toggle this help") + "\n")

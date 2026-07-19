@@ -89,6 +89,8 @@ Trunk is never absorbed unless `--onto-trunk`.
 | `c` | Create child (suffix prompt) |
 | `f` | Fetch origin |
 | `F` | Pull selected (fetch + FF-only) |
+| `y` | Copy branch name to clipboard |
+| `Y` | Copy commit SHA to clipboard |
 | `ctrl+r` | Refresh list + PR parents |
 | `?` | Help |
 | `q` | Quit |
