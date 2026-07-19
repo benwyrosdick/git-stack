@@ -82,8 +82,8 @@ Trunk is never absorbed unless `--onto-trunk`.
 | `enter` | Checkout |
 | `r` / `R` | Restack / restack `--onto-trunk` |
 | `s` / `S` | Sync / sync `--onto-trunk` |
-| `d` | Safe delete local branch (`git branch -d`) |
-| `D` | Force-delete local branch (`git branch -D`) |
+| `d` | Safe delete local branch (`git branch -d`; confirms with `y`) |
+| `D` | Force-delete local branch (`git branch -D`; confirms with `y`) |
 | `p` | Push (`--force-with-lease`) |
 | `P` | Open/retarget PR |
 | `c` | Create child (suffix prompt) |

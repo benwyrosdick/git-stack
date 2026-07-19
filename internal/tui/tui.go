@@ -156,10 +156,11 @@ type model struct {
 	showError bool // full-screen multiline error overlay
 	width     int
 	height    int
-	busy      bool
-	input     inputMode
-	prompt    string
-	inputBuf  string
+	busy         bool
+	input        inputMode
+	prompt       string
+	inputBuf     string
+	confirmForce bool // force-delete when input == inputConfirm
 }
 
 type inputMode int
@@ -167,6 +168,7 @@ type inputMode int
 const (
 	inputNone inputMode = iota
 	inputCreate
+	inputConfirm
 )
 
 type loadedMsg struct {
@@ -336,6 +338,9 @@ func (m model) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.input == inputConfirm {
+		return m.handleConfirm(msg)
+	}
 	switch msg.Type {
 	case tea.KeyEnter:
 		suffix := strings.TrimSpace(m.inputBuf)
@@ -371,6 +376,27 @@ func (m model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(msg.Runes) > 0 {
 			m.inputBuf += string(msg.Runes)
 		}
+		return m, nil
+	}
+}
+
+func (m model) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		force := m.confirmForce
+		m.input = inputNone
+		m.confirmForce = false
+		m.prompt = ""
+		return m.runDelete(force)
+	case "n", "N", "esc", "enter", "q":
+		m.input = inputNone
+		m.confirmForce = false
+		m.prompt = ""
+		return m, nil
+	case "ctrl+c":
+		return m, tea.Quit
+	default:
+		// Ignore other keys so a stray press can't confirm.
 		return m, nil
 	}
 }
@@ -422,9 +448,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "S":
 		return m.runSync(true, false)
 	case "d":
-		return m.runDelete(false)
+		return m.promptDelete(false)
 	case "D":
-		return m.runDelete(true)
+		return m.promptDelete(true)
 	case "y":
 		if len(m.infos) == 0 {
 			return m, nil
@@ -573,6 +599,21 @@ func (m model) runSync(ontoTrunk, dryRun bool) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m model) promptDelete(force bool) (tea.Model, tea.Cmd) {
+	if len(m.infos) == 0 {
+		return m, nil
+	}
+	b := m.infos[m.cursor].Name
+	m.input = inputConfirm
+	m.confirmForce = force
+	if force {
+		m.prompt = fmt.Sprintf("force-delete %s? [y/N] ", b)
+	} else {
+		m.prompt = fmt.Sprintf("delete %s? [y/N] ", b)
+	}
+	return m, nil
+}
+
 func (m model) runDelete(force bool) (tea.Model, tea.Cmd) {
 	if len(m.infos) == 0 {
 		return m, nil
@@ -629,8 +670,11 @@ func (m model) View() string {
 	}
 
 	b.WriteString("\n")
-	if m.input != inputNone {
+	switch m.input {
+	case inputCreate:
 		b.WriteString(keyStyle.Render("create") + " " + m.prompt + m.inputBuf + "█\n")
+	case inputConfirm:
+		b.WriteString(errStyle.Render("confirm") + " " + m.prompt + "\n")
 	}
 
 	if m.width > 0 {
@@ -841,8 +885,8 @@ func helpView() string {
 	b.WriteString(helpLine("R", "restack --onto-trunk") + "\n")
 	b.WriteString(helpLine("s", "sync stack under selected") + "\n")
 	b.WriteString(helpLine("S", "sync --onto-trunk") + "\n")
-	b.WriteString(helpLine("d", "delete local branch (git branch -d)") + "\n")
-	b.WriteString(helpLine("D", "force-delete local branch (git branch -D)") + "\n")
+	b.WriteString(helpLine("d", "delete local branch (y to confirm; git branch -d)") + "\n")
+	b.WriteString(helpLine("D", "force-delete local branch (y to confirm; git branch -D)") + "\n")
 	b.WriteString(helpLine("c", "create child (suffix prompt)") + "\n")
 	b.WriteString(helpLine("p", "push selected (force-with-lease)") + "\n")
 	b.WriteString(helpLine("P", "create/retarget PR (gh)") + "\n")
