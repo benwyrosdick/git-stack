@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/benwyrosdick/git-stack/internal/git"
-	"github.com/benwyrosdick/git-stack/internal/stack"
 )
 
 // Client shells out to gh.
@@ -44,11 +43,12 @@ func Available() bool {
 // PROpts for create/retarget.
 type PROpts struct {
 	Branch string
+	Base   string // required stack parent (caller resolves)
 	Draft  bool
 }
 
-// EnsurePR creates or retargets a PR with inferred parent base.
-func EnsurePR(eng *stack.Engine, repo *git.Repo, opts PROpts) (string, error) {
+// EnsurePR creates or retargets a PR with the given base.
+func EnsurePR(repo *git.Repo, opts PROpts) (string, error) {
 	if !Available() {
 		return "", fmt.Errorf("gh is required for git-stack pr")
 	}
@@ -60,7 +60,10 @@ func EnsurePR(eng *stack.Engine, repo *git.Repo, opts PROpts) (string, error) {
 			return "", err
 		}
 	}
-	parent := eng.ParentOf(branch)
+	parent := opts.Base
+	if parent == "" {
+		return "", fmt.Errorf("PR base is required")
+	}
 	c := &Client{Dir: repo.Dir}
 
 	if !repo.OriginBranchExists(branch) {
@@ -70,7 +73,6 @@ func EnsurePR(eng *stack.Engine, repo *git.Repo, opts PROpts) (string, error) {
 		}
 	}
 
-	// Does PR exist?
 	if _, err := c.run("pr", "view", branch, "--json", "number", "--jq", ".number"); err == nil {
 		currentBase, err := c.run("pr", "view", branch, "--json", "baseRefName", "--jq", ".baseRefName")
 		if err != nil {
@@ -92,7 +94,6 @@ func EnsurePR(eng *stack.Engine, repo *git.Repo, opts PROpts) (string, error) {
 	if opts.Draft {
 		args = append(args, "--draft")
 	}
-	// create prints URL to stdout
 	cmd := exec.Command("gh", args...)
 	if repo.Dir != "" {
 		cmd.Dir = repo.Dir
@@ -103,7 +104,18 @@ func EnsurePR(eng *stack.Engine, repo *git.Repo, opts PROpts) (string, error) {
 	return "", cmd.Run()
 }
 
+// HasPR reports whether an open (or any) PR exists for the branch head.
+func HasPR(repo *git.Repo, branch string) bool {
+	if !Available() {
+		return false
+	}
+	c := &Client{Dir: repo.Dir}
+	_, err := c.run("pr", "view", branch, "--json", "number", "--jq", ".number")
+	return err == nil
+}
+
 // RetargetBase sets PR base if a PR exists for branch.
+// Returns nil if gh is missing or no PR exists.
 func RetargetBase(repo *git.Repo, branch, newBase string) error {
 	if !Available() {
 		return nil

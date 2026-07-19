@@ -2,16 +2,14 @@
 
 Lightweight CLI + TUI for **stacked branches / PRs** in plain git.
 
-Parents are inferred from **dot depth** in the branch name (not `/`, because git cannot store both `foo` and `foo/bar`):
+Parents are **not only** encoded in branch names. Resolution order:
 
-```
-main
-└── wms-batching           # PR base: main
-    └── wms-batching.ui    # PR base: wms-batching
-        └── wms-batching.ui.tests
-```
+1. **Open PR base** (shared with the team — draft PRs count)
+2. **Local config** `branch.<name>.gitstack-parent`
+3. **Dot-depth name** (`feature.ui` → `feature`) — zero-config fallback
+4. **Trunk** (default branch)
 
-Ported from battle-tested helpers used at Vesyl (`local-services/stack`), with the same restack/sync safety model.
+You can reparent in or out of a stack **without renaming**.
 
 ## Install
 
@@ -19,54 +17,62 @@ Ported from battle-tested helpers used at Vesyl (`local-services/stack`), with t
 curl -fsSL https://raw.githubusercontent.com/benwyrosdick/git-stack/main/scripts/install.sh | bash
 ```
 
-Installs to `~/.local/bin` by default. Override with `GIT_STACK_INSTALL_DIR`.
-
-From source (module root or elsewhere):
+From source:
 
 ```bash
-# from this repo
 go install ./cmd/git-stack
-
-# or without cloning
+# or
 go install github.com/benwyrosdick/git-stack/cmd/git-stack@latest
 ```
-
-(`go install` alone fails — there is no `main` package at the repo root.)
 
 ## Usage
 
 ```bash
 git-stack                  # interactive TUI
 git-stack ls [root]
-git-stack parent [branch]
+git-stack parent [branch] [-v]          # -v shows source: pr|local|name|trunk
 git-stack create <name> [--from <start>]
 git-stack restack [branch] [--push] [--onto-trunk] [--no-fetch]
 git-stack reparent <branch> <new-parent> [--from <old>] [--push] [--no-fetch]
 git-stack sync [root] [--push] [--onto-trunk] [--dry-run] [--no-fetch]
-git-stack pr [branch] [--draft]   # needs gh
+git-stack pr [branch] [--draft]
+git-stack track <branch> --parent <parent>   # metadata only
+git-stack untrack [branch]
+git-stack adopt [root]                       # write local parents from current resolution
 ```
 
-### When to use restack vs sync
+Global flags: `--offline` (no `gh`), `--refresh` (force PR parent map reload).
+
+### Free names (recommended for reparenting)
+
+```bash
+git-stack create api-work
+git-stack create ui-work --from api-work   # records local parent
+git push -u origin HEAD && git-stack pr --draft   # PR base = team-shared parent
+
+git-stack reparent ui-work other-api       # move stacks without rename
+```
+
+### Dot names (still work)
+
+```
+main
+└── wms-batching           # parent: main
+    └── wms-batching.ui    # parent: wms-batching
+```
+
+### restack vs sync
 
 | Direction | Command | Does |
 | --- | --- | --- |
-| **Back** (ancestors) | `restack` | Put **me** on my parent tip |
-| **Back** + trunk | `restack --onto-trunk` | Restack stack base → … → me onto path from trunk |
-| **Forward** (descendants) | `sync` | Fix **root on its parent** (if parent ≠ trunk), then all kids under root |
-| **Forward** + trunk | `sync --onto-trunk` | Backward chain from trunk through root, then kids |
+| **Back** | `restack` | Put **me** on my parent tip |
+| **Back** + trunk | `restack --onto-trunk` | Restack chain onto trunk path |
+| **Forward** | `sync` | Fix root on parent, then descendants |
+| **Forward** + trunk | `sync --onto-trunk` | Include trunk |
 
-Trunk (`main`) is **never** absorbed unless `--onto-trunk`.
+`--dry-run` on sync **prints the plan only** (no branch rewrites).
 
-### Everyday workflow
-
-```bash
-git-stack create wms-batching && git push -u origin HEAD && git-stack pr
-git-stack create wms-batching.ui && git push -u origin HEAD && git-stack pr
-
-git-stack restack wms-batching.ui --push          # one child, looking back
-git-stack sync wms-batching --push                # whole stack under base
-git-stack sync wms-batching --onto-trunk --push   # also absorb latest main
-```
+Trunk is never absorbed unless `--onto-trunk`.
 
 ### TUI keys
 
@@ -76,21 +82,27 @@ git-stack sync wms-batching --onto-trunk --push   # also absorb latest main
 | `enter` | Checkout |
 | `r` / `R` | Restack / restack `--onto-trunk` |
 | `s` / `S` | Sync / sync `--onto-trunk` |
-| `d` | Dry-run sync |
+| `d` | Preview sync plan (dry-run) |
 | `p` | Push (`--force-with-lease`) |
-| `c` | Create child branch |
 | `P` | Open/retarget PR |
+| `c` | Create child (suffix prompt) |
 | `f` | Fetch origin |
+| `ctrl+r` | Refresh list + PR parents |
 | `?` | Help |
 | `q` | Quit |
 
+## How parents are shared
+
+- **Draft or ready PR** base is the team-visible stack parent (`gh pr list` bulk-loaded, cached under `.git/git-stack/`).
+- **Local config** covers branches without a PR yet and offline work.
+- Opening/retargeting a PR with `git-stack pr` or `reparent` keeps base in sync.
+
 ## Safety
 
-- Tracked dirty worktree / rebase-in-progress refused (untracked files OK)
-- Diverged local/origin blocks the plan (playbook printed; no half-apply)
-- Content conflicts still stop mid-apply after a clean plan
-- Push opt-in via `--push` (`--force-with-lease` when remote exists)
-- Restack cutoff prefers `git merge-base --fork-point` so force-pushed parents do not drag old parent commits into the child
+- Tracked dirty worktree / rebase-in-progress refused (untracked OK)
+- Diverged local/origin blocks the plan
+- Push opt-in via `--push` (`--force-with-lease`)
+- Restack cutoff prefers `git merge-base --fork-point`
 
 ## Development
 

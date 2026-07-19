@@ -205,6 +205,51 @@ func TestParentOf_DotDepth(t *testing.T) {
 	})
 }
 
+func TestParentOf_LocalConfig(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "checkout", "-q", "-b", "api-work")
+		writeCommit(t, dir, "a.txt", "a", "api-1")
+		gitRun(t, dir, "checkout", "-q", "main")
+		gitRun(t, dir, "checkout", "-q", "-b", "ui-work")
+		writeCommit(t, dir, "u.txt", "u", "ui-1")
+		// Free names: no dots — without config, parent is trunk
+		if p := eng.ParentOf("ui-work"); p != "main" {
+			t.Fatalf("before track got %s", p)
+		}
+		if err := eng.Track("ui-work", "api-work"); err != nil {
+			t.Fatal(err)
+		}
+		if p := eng.ParentOf("ui-work"); p != "api-work" {
+			t.Fatalf("after track got %s want api-work", p)
+		}
+		if _, src := eng.ParentOfWithSource("ui-work"); src != stack.SourceLocal {
+			t.Fatalf("source %s", src)
+		}
+	})
+}
+
+func TestCreate_FreeNameFrom(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		if err := eng.Create(stack.CreateOpts{Name: "api-work"}); err != nil {
+			t.Fatal(err)
+		}
+		writeCommit(t, dir, "a.txt", "a", "api-1")
+		if err := eng.Create(stack.CreateOpts{Name: "ui-work", From: "api-work"}); err != nil {
+			t.Fatal(err)
+		}
+		if eng.ParentOf("ui-work") != "api-work" {
+			t.Fatalf("parent %s", eng.ParentOf("ui-work"))
+		}
+		kids, err := eng.DescendantsOf("api-work")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kids) != 1 || kids[0] != "ui-work" {
+			t.Fatalf("descendants %v", kids)
+		}
+	})
+}
+
 func TestCreate(t *testing.T) {
 	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
 		if err := eng.Create(stack.CreateOpts{Name: "feat"}); err != nil {
@@ -219,6 +264,50 @@ func TestCreate(t *testing.T) {
 		}
 		if eng.ParentOf("feat.ui") != "feat" {
 			t.Fatal("parent")
+		}
+	})
+}
+
+func TestReparent_UpdatesMetadata(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "checkout", "-q", "-b", "a")
+		writeCommit(t, dir, "a.txt", "a", "a-1")
+		gitRun(t, dir, "checkout", "-q", "main")
+		gitRun(t, dir, "checkout", "-q", "-b", "b")
+		writeCommit(t, dir, "b.txt", "b", "b-1")
+		gitRun(t, dir, "checkout", "-q", "a")
+		if err := eng.Create(stack.CreateOpts{Name: "child", From: "a"}); err != nil {
+			t.Fatal(err)
+		}
+		writeCommit(t, dir, "c.txt", "c", "child-1")
+		if eng.ParentOf("child") != "a" {
+			t.Fatal(eng.ParentOf("child"))
+		}
+		if err := eng.Reparent(stack.ReparentOpts{
+			Branch:    "child",
+			NewParent: "b",
+			NoFetch:   true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if eng.ParentOf("child") != "b" {
+			t.Fatalf("parent after reparent: %s", eng.ParentOf("child"))
+		}
+		if !repo.IsAncestor("refs/heads/b", "refs/heads/child") {
+			t.Fatal("history not on b")
+		}
+	})
+}
+
+func TestTrack_CycleRejected(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "branch", "a")
+		gitRun(t, dir, "branch", "b")
+		if err := eng.Track("a", "b"); err != nil {
+			t.Fatal(err)
+		}
+		if err := eng.Track("b", "a"); err == nil {
+			t.Fatal("expected cycle error")
 		}
 	})
 }

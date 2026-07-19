@@ -68,8 +68,8 @@ func helpLine(keys, desc string) string {
 }
 
 // Run starts the full-screen TUI.
-func Run(repo *git.Repo) error {
-	m := newModel(repo)
+func Run(repo *git.Repo, offline, refresh bool) error {
+	m := newModel(repo, offline, refresh)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
@@ -78,6 +78,8 @@ func Run(repo *git.Repo) error {
 type model struct {
 	repo      *git.Repo
 	eng       *stack.Engine
+	offline   bool
+	refresh   bool // force PR parent map refresh on next reload
 	infos     []stack.BranchInfo
 	cursor    int
 	current   string
@@ -113,12 +115,14 @@ type doneMsg struct {
 	err error
 }
 
-func newModel(repo *git.Repo) model {
+func newModel(repo *git.Repo, offline, refresh bool) model {
 	var buf strings.Builder
 	eng := &stack.Engine{Repo: repo, Out: &buf, Quiet: false}
 	return model{
-		repo: repo,
-		eng:  eng,
+		repo:    repo,
+		eng:     eng,
+		offline: offline,
+		refresh: refresh,
 	}
 }
 
@@ -127,9 +131,16 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) reload() tea.Cmd {
+	offline, refresh := m.offline, m.refresh
+	eng := m.eng
+	repo := m.repo
 	return func() tea.Msg {
-		infos, err := m.eng.List("")
-		cur, _ := m.repo.CurrentBranch()
+		_ = eng.LoadParents(stack.LoadParentsOpts{
+			Offline: offline,
+			Refresh: refresh,
+		})
+		infos, err := eng.List("")
+		cur, _ := repo.CurrentBranch()
 		return loadedMsg{infos: infos, current: cur, err: err}
 	}
 }
@@ -143,6 +154,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case loadedMsg:
 		m.busy = false
+		m.refresh = false
 		if msg.err != nil {
 			m.errMsg = msg.err.Error()
 			return m, nil
@@ -362,10 +374,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		b := m.infos[m.cursor].Name
 		m.busy = true
 		return m, func() tea.Msg {
-			url, err := gh.EnsurePR(m.eng, m.repo, gh.PROpts{Branch: b})
+			base := m.eng.ParentOf(b)
+			url, err := gh.EnsurePR(m.repo, gh.PROpts{Branch: b, Base: base})
 			if err != nil {
 				return doneMsg{err: err}
 			}
+			m.eng.InvalidateParentCache()
 			msg := "PR ready"
 			if url != "" {
 				msg = url
@@ -382,6 +396,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "ctrl+r":
 		m.busy = true
+		m.refresh = true
+		m.eng.InvalidateParentCache()
 		return m, m.reload()
 	}
 	return m, nil

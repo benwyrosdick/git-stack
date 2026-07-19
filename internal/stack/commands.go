@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/benwyrosdick/git-stack/internal/git"
@@ -51,6 +50,10 @@ func (e *Engine) Create(opts CreateOpts) error {
 		return err
 	}
 	if err := e.Repo.SwitchCreate(opts.Name, startRef); err != nil {
+		return err
+	}
+	// Record explicit parent so free names (no dots) stay stacked.
+	if err := e.SetParentLocal(opts.Name, parent); err != nil {
 		return err
 	}
 	e.info("created %s from %s", opts.Name, parent)
@@ -211,6 +214,11 @@ func (e *Engine) Reparent(opts ReparentOpts) error {
 	if err := e.rebaseOnto(newRef, oldRef, opts.Branch); err != nil {
 		return err
 	}
+	// Persist stack link independent of branch name.
+	if err := e.SetParentLocal(opts.Branch, opts.NewParent); err != nil {
+		return err
+	}
+	e.InvalidateParentCache()
 	e.info("reparented %s onto %s", opts.Branch, opts.NewParent)
 	return e.MaybePush(opts.Branch, opts.Push)
 }
@@ -264,7 +272,7 @@ func (e *Engine) Sync(opts SyncOpts) (*SyncResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	sortedKids := SortByDepth(kids)
+	sortedKids := e.SortByDepth(kids)
 
 	var backChain []string
 	if opts.OntoTrunk {
@@ -565,8 +573,8 @@ type BranchInfo struct {
 }
 
 // List returns stack tree info under root (or all stacks if root empty).
-// When root is empty, the default branch (trunk) is included first so its
-// remote status is visible alongside stacked branches.
+// When root is empty, trunk is first, then every branch in a stack graph
+// (PR parent, local parent, dots, or ancestor of such).
 func (e *Engine) List(root string) ([]BranchInfo, error) {
 	trunk := e.Repo.DefaultBranch()
 	var list []string
@@ -579,49 +587,49 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		list = append(list, kids...)
+		list = append(list, e.SortByDepth(kids)...)
 	} else {
 		all, err := e.Repo.LocalBranches()
 		if err != nil {
 			return nil, err
 		}
 		seen := map[string]bool{}
-		// Always show trunk first when listing everything.
 		if e.Repo.RefExists(trunk) {
 			list = append(list, trunk)
 			seen[trunk] = true
 		}
-		for _, line := range all {
-			if !strings.Contains(line, ".") {
+		// Collect stack members: non-trunk parent, or has stack descendants, or dots/config/PR.
+		for _, b := range all {
+			if seen[b] || e.IsTrunk(b) {
 				continue
 			}
-			top := strings.SplitN(line, ".", 2)[0]
-			if e.Repo.RefExists(top) && !seen[top] {
-				seen[top] = true
-				list = append(list, top)
-			}
-			if !seen[line] {
-				seen[line] = true
-				list = append(list, line)
+			if e.inStackGraph(b) {
+				seen[b] = true
+				list = append(list, b)
+				// include ancestors so free-named middles appear
+				cur := e.ParentOf(b)
+				for i := 0; i < 64 && cur != "" && !e.IsTrunk(cur) && !seen[cur]; i++ {
+					if e.Repo.LocalBranchExists(cur) || e.Repo.RefExists(cur) {
+						seen[cur] = true
+						list = append(list, cur)
+					}
+					next := e.ParentOf(cur)
+					if next == cur {
+						break
+					}
+					cur = next
+				}
 			}
 		}
-		if len(list) == 0 || (len(list) == 1 && list[0] == trunk) {
-			// Only trunk (or empty): still useful for remote status; note if no stacks.
-			if len(list) <= 1 {
-				e.info("no dot-stacked local branches (e.g. feature.ui)")
-			}
+		if len(list) <= 1 {
+			e.info("no stacked local branches (create with --from or use dots, e.g. feature.ui)")
 			if len(list) == 0 {
 				return nil, nil
 			}
 		}
-		// Keep trunk first; sort the rest.
 		rest := list[1:]
-		sort.Strings(rest)
+		rest = e.SortByDepth(rest)
 		list = append([]string{list[0]}, rest...)
-	}
-
-	if root != "" {
-		sort.Strings(list)
 	}
 
 	var infos []BranchInfo
@@ -635,11 +643,10 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 		}
 		own := "?"
 		status := StatusMissingParent
-		depth := BranchDepth(b)
+		depth := e.BranchDepth(b)
 		displayParent := parent
 
 		if e.IsTrunk(b) {
-			// Trunk has no stack parent; surface remote status, not restack.
 			displayParent = "—"
 			own = "0"
 			status = StatusOK
@@ -660,10 +667,6 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 		if e.Repo.LocalBranchExists(b) {
 			rel = e.Repo.RemoteRelationOf(b)
 		}
-		// When trunk is shown at depth 0, indent stack bases under it.
-		if root == "" && !e.IsTrunk(b) && e.Repo.RefExists(trunk) {
-			depth = BranchDepth(b) // bases=1, children=2+ → indent relative to trunk
-		}
 		infos = append(infos, BranchInfo{
 			Name:       b,
 			Parent:     displayParent,
@@ -677,12 +680,47 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 	return infos, nil
 }
 
+// inStackGraph reports whether branch participates in a stack (not only trunk).
+func (e *Engine) inStackGraph(b string) bool {
+	if e.IsTrunk(b) {
+		return false
+	}
+	// Explicit local parent
+	if e.Repo.GetStackParent(b) != "" {
+		return true
+	}
+	// Open PR with a base
+	if e.prParents != nil {
+		if base, ok := e.prParents[b]; ok && base != "" {
+			return true
+		}
+	}
+	// Dot name convention
+	if strings.Contains(b, ".") {
+		return true
+	}
+	// Parent is non-trunk (via any resolution)
+	p := e.ParentOf(b)
+	if p != "" && !e.IsTrunk(p) {
+		return true
+	}
+	// Has children in the graph
+	kids, err := e.DescendantsOf(b)
+	return err == nil && len(kids) > 0
+}
+
 // FormatList prints ls-style lines.
 func FormatList(root string, infos []BranchInfo) string {
 	var b strings.Builder
 	rootDepth := 0
-	if root != "" {
-		rootDepth = BranchDepth(root)
+	if root != "" && len(infos) > 0 {
+		rootDepth = infos[0].Depth
+		for _, info := range infos {
+			if info.Name == root {
+				rootDepth = info.Depth
+				break
+			}
+		}
 	}
 	for _, info := range infos {
 		indent := info.Depth - rootDepth

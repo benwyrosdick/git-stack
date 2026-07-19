@@ -295,7 +295,48 @@ func (r *Repo) PushUpstream(branch string) error {
 		"refs/heads/"+branch+":refs/heads/"+branch)
 }
 
-// Quiet config helpers for tests.
+// Config sets a local git config key.
 func (r *Repo) Config(key, value string) error {
 	return r.runOK("config", key, value)
+}
+
+// ConfigGet returns a local config value, or "" if unset.
+func (r *Repo) ConfigGet(key string) string {
+	out, err := r.run("config", "--get", key)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// ConfigUnset removes a local config key (no error if missing).
+func (r *Repo) ConfigUnset(key string) error {
+	cmd := r.git("config", "--unset", key)
+	_ = cmd.Run() // exit 5 = not found
+	return nil
+}
+
+// GitDir returns the absolute path to .git (or common dir).
+func (r *Repo) GitDir() (string, error) {
+	return r.run("rev-parse", "--git-dir")
+}
+
+// StackParentConfigKey is the git config key for an explicit stack parent.
+func StackParentConfigKey(branch string) string {
+	return "branch." + branch + ".gitstack-parent"
+}
+
+// GetStackParent reads branch.<name>.gitstack-parent.
+func (r *Repo) GetStackParent(branch string) string {
+	return r.ConfigGet(StackParentConfigKey(branch))
+}
+
+// SetStackParent writes branch.<name>.gitstack-parent.
+func (r *Repo) SetStackParent(branch, parent string) error {
+	return r.Config(StackParentConfigKey(branch), parent)
+}
+
+// UnsetStackParent clears branch.<name>.gitstack-parent.
+func (r *Repo) UnsetStackParent(branch string) error {
+	return r.ConfigUnset(StackParentConfigKey(branch))
 }

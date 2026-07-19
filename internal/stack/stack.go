@@ -1,12 +1,11 @@
-// Package stack implements plain-git stacked branch helpers with dot-depth
-// parent inference (e.g. feature.ui → parent feature).
+// Package stack implements plain-git stacked branch helpers.
+// Parents resolve from PR base → local config → dot-depth name → trunk.
 package stack
 
 import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/benwyrosdick/git-stack/internal/git"
@@ -18,6 +17,9 @@ type Engine struct {
 	Out    io.Writer // info messages (stderr-like); defaults to os.Stderr
 	Quiet  bool      // suppress interactive rebase attach (use quiet rebase)
 	NoPush bool      // ignored; push is per-call
+
+	// prParents is head → base from open PRs (bulk-loaded via LoadParents).
+	prParents map[string]string
 }
 
 func (e *Engine) info(format string, args ...any) {
@@ -33,32 +35,6 @@ func (e *Engine) rebaseOnto(onto, upstream, branch string) error {
 		return e.Repo.RebaseOntoQuiet(onto, upstream, branch)
 	}
 	return e.Repo.RebaseOnto(onto, upstream, branch)
-}
-
-// ---------------------------------------------------------------------------
-// Parent inference
-// ---------------------------------------------------------------------------
-
-// ParentOf walks off the last "." segment until a ref exists; else trunk.
-func (e *Engine) ParentOf(branch string) string {
-	trunk := e.Repo.DefaultBranch()
-	if !strings.Contains(branch, ".") {
-		return trunk
-	}
-	candidate := branch
-	for strings.Contains(candidate, ".") {
-		i := strings.LastIndex(candidate, ".")
-		candidate = candidate[:i]
-		if e.Repo.RefExists(candidate) {
-			return candidate
-		}
-	}
-	return trunk
-}
-
-// BranchDepth is number of '.' + 1.
-func BranchDepth(b string) int {
-	return strings.Count(b, ".") + 1
 }
 
 // SlashRefConflict returns an existing ancestor path segment if name uses /
@@ -93,62 +69,6 @@ func (e *Engine) TrunkRef() (string, error) {
 		return "refs/heads/" + trunk, nil
 	}
 	return "", fmt.Errorf("trunk branch does not exist: %s", trunk)
-}
-
-// DescendantsOf returns local branches under root by dot prefix (root.child...).
-func (e *Engine) DescendantsOf(root string) ([]string, error) {
-	all, err := e.Repo.LocalBranches()
-	if err != nil {
-		return nil, err
-	}
-	prefix := root + "."
-	var out []string
-	for _, b := range all {
-		if strings.HasPrefix(b, prefix) {
-			out = append(out, b)
-		}
-	}
-	return out, nil
-}
-
-// SortByDepth sorts branch names by depth ascending, then name.
-func SortByDepth(branches []string) []string {
-	out := append([]string(nil), branches...)
-	sort.SliceStable(out, func(i, j int) bool {
-		di, dj := BranchDepth(out[i]), BranchDepth(out[j])
-		if di != dj {
-			return di < dj
-		}
-		return out[i] < out[j]
-	})
-	return out
-}
-
-// AncestorChainTo returns local stack chain from base (child of trunk) → branch,
-// shallow first. Does not include trunk.
-func (e *Engine) AncestorChainTo(branch string) ([]string, error) {
-	trunk := e.Repo.DefaultBranch()
-	var deepFirst []string
-	cur := branch
-	for cur != trunk {
-		if !e.Repo.LocalBranchExists(cur) {
-			return nil, fmt.Errorf("local branch does not exist in stack chain: %s", cur)
-		}
-		deepFirst = append(deepFirst, cur)
-		p := e.ParentOf(cur)
-		if p == cur {
-			return nil, fmt.Errorf("cannot resolve parent chain at %s", cur)
-		}
-		if p == trunk {
-			break
-		}
-		cur = p
-	}
-	// reverse to shallow-first
-	for i, j := 0, len(deepFirst)-1; i < j; i, j = i+1, j-1 {
-		deepFirst[i], deepFirst[j] = deepFirst[j], deepFirst[i]
-	}
-	return deepFirst, nil
 }
 
 // ---------------------------------------------------------------------------
