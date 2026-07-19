@@ -270,6 +270,7 @@ func cmdPR(args []string, offline, refresh bool) error {
 		opts.Branch = branch
 	}
 	opts.Base = eng.ParentOf(branch)
+	opts.StackBranches = eng.PRStackBranches(branch)
 	url, err := gh.EnsurePR(repo, opts)
 	if err != nil {
 		return err

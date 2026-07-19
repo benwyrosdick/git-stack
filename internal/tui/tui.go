@@ -548,7 +548,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.busy = true
 		return m, func() tea.Msg {
 			base := m.eng.ParentOf(b)
-			url, err := gh.EnsurePR(m.repo, gh.PROpts{Branch: b, Base: base})
+			url, err := gh.EnsurePR(m.repo, gh.PROpts{
+				Branch:        b,
+				Base:          base,
+				StackBranches: m.eng.PRStackBranches(b),
+			})
 			if err != nil {
 				return doneMsg{err: err}
 			}

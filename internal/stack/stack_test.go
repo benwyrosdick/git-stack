@@ -250,6 +250,33 @@ func TestCreate_FreeNameFrom(t *testing.T) {
 	})
 }
 
+func TestPRStackBranches(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		if err := eng.Create(stack.CreateOpts{Name: "feat"}); err != nil {
+			t.Fatal(err)
+		}
+		writeCommit(t, dir, "f.txt", "f", "feat-1")
+		if err := eng.Create(stack.CreateOpts{Name: "feat.ui"}); err != nil {
+			t.Fatal(err)
+		}
+		writeCommit(t, dir, "u.txt", "u", "ui-1")
+		if err := eng.Create(stack.CreateOpts{Name: "feat.ui.tests"}); err != nil {
+			t.Fatal(err)
+		}
+		// Stack for middle branch: trunk → feat → feat.ui → child
+		got := eng.PRStackBranches("feat.ui")
+		want := []string{"main", "feat", "feat.ui", "feat.ui.tests"}
+		if len(got) != len(want) {
+			t.Fatalf("got %v want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("got %v want %v", got, want)
+			}
+		}
+	})
+}
+
 func TestCreate(t *testing.T) {
 	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
 		if err := eng.Create(stack.CreateOpts{Name: "feat"}); err != nil {

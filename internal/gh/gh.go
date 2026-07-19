@@ -3,6 +3,7 @@ package gh
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,9 +46,13 @@ type PROpts struct {
 	Branch string
 	Base   string // required stack parent (caller resolves)
 	Draft  bool
+	// StackBranches is the stack ordered base → tip (e.g. trunk, …, branch, …kids).
+	// When non-empty, a linked stack section is written at the top of the PR body.
+	StackBranches []string
 }
 
 // EnsurePR creates or retargets a PR with the given base.
+// When StackBranches is set, upserts a stack section (with markers) at the top of the PR body.
 func EnsurePR(repo *git.Repo, opts PROpts) (string, error) {
 	if !Available() {
 		return "", fmt.Errorf("gh is required for git-stack pr")
@@ -87,21 +92,74 @@ func EnsurePR(repo *git.Repo, opts PROpts) (string, error) {
 		} else {
 			fmt.Fprintf(os.Stderr, "stack: PR already targets %s\n", parent)
 		}
-		return c.run("pr", "view", branch, "--json", "url", "--jq", ".url")
+	} else {
+		args := []string{"pr", "create", "--base", parent, "--head", branch, "--fill"}
+		if opts.Draft {
+			args = append(args, "--draft")
+		}
+		cmd := exec.Command("gh", args...)
+		if repo.Dir != "" {
+			cmd.Dir = repo.Dir
+		}
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+		if err := cmd.Run(); err != nil {
+			return "", err
+		}
 	}
 
-	args := []string{"pr", "create", "--base", parent, "--head", branch, "--fill"}
-	if opts.Draft {
-		args = append(args, "--draft")
+	if len(opts.StackBranches) > 0 {
+		if err := c.writeStackBody(branch, opts.StackBranches); err != nil {
+			fmt.Fprintf(os.Stderr, "stack: could not update PR stack section: %v\n", err)
+		}
 	}
-	cmd := exec.Command("gh", args...)
-	if repo.Dir != "" {
-		cmd.Dir = repo.Dir
+
+	return c.run("pr", "view", branch, "--json", "url", "--jq", ".url")
+}
+
+// writeStackBody builds stack markdown from open PRs and upserts it into the PR body.
+func (c *Client) writeStackBody(branch string, stackBranches []string) error {
+	prs, err := c.ListOpenPRs()
+	if err != nil {
+		prs = map[string]PRInfo{}
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	return "", cmd.Run()
+	// Ensure the current PR is present even if list is briefly stale after create.
+	if _, ok := prs[branch]; !ok {
+		if info, err := c.viewPRInfo(branch); err == nil {
+			prs[branch] = info
+		}
+	}
+	md := FormatStackMarkdown(prs, stackBranches, branch)
+	return c.updatePRBodyStack(branch, md)
+}
+
+func (c *Client) viewPRInfo(branch string) (PRInfo, error) {
+	out, err := c.run("pr", "view", branch, "--json", "headRefName,baseRefName,number,url,isDraft")
+	if err != nil {
+		return PRInfo{}, err
+	}
+	var row struct {
+		HeadRefName string `json:"headRefName"`
+		BaseRefName string `json:"baseRefName"`
+		Number      int    `json:"number"`
+		URL         string `json:"url"`
+		IsDraft     bool   `json:"isDraft"`
+	}
+	if err := json.Unmarshal([]byte(out), &row); err != nil {
+		return PRInfo{}, fmt.Errorf("pr view parse: %w", err)
+	}
+	head := row.HeadRefName
+	if head == "" {
+		head = branch
+	}
+	return PRInfo{
+		Head:   head,
+		Base:   row.BaseRefName,
+		Number: row.Number,
+		URL:    row.URL,
+		Draft:  row.IsDraft,
+	}, nil
 }
 
 // HasPR reports whether an open (or any) PR exists for the branch head.

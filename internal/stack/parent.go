@@ -268,6 +268,44 @@ func (e *Engine) SortByDepth(branches []string) []string {
 	return out
 }
 
+// PRStackBranches returns the stack lineage for PR body display: trunk, ancestors
+// of branch (shallow first), branch, then descendants (by depth). Used to render
+// linked stack sections in PR descriptions.
+func (e *Engine) PRStackBranches(branch string) []string {
+	if branch == "" {
+		return nil
+	}
+	trunk := e.Repo.DefaultBranch()
+	out := []string{}
+	if trunk != "" {
+		out = append(out, trunk)
+	}
+	chain, err := e.AncestorChainTo(branch)
+	if err != nil || len(chain) == 0 {
+		// Still show trunk + branch when chain resolution fails.
+		if branch != trunk && !e.IsTrunk(branch) {
+			out = append(out, branch)
+		}
+	} else {
+		out = append(out, chain...)
+	}
+	kids, err := e.DescendantsOf(branch)
+	if err == nil && len(kids) > 0 {
+		out = append(out, e.SortByDepth(kids)...)
+	}
+	// Dedup while preserving order (trunk might equal something weird).
+	seen := map[string]bool{}
+	dedup := make([]string, 0, len(out))
+	for _, b := range out {
+		if b == "" || seen[b] {
+			continue
+		}
+		seen[b] = true
+		dedup = append(dedup, b)
+	}
+	return dedup
+}
+
 // AncestorChainTo returns local stack chain from base (child of trunk) → branch,
 // shallow first. Does not include trunk.
 func (e *Engine) AncestorChainTo(branch string) ([]string, error) {

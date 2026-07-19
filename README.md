@@ -100,6 +100,7 @@ Trunk is never absorbed unless `--onto-trunk`.
 - **Draft or ready PR** base is the team-visible stack parent (`gh pr list` bulk-loaded, cached under `.git/git-stack/`).
 - **Local config** covers branches without a PR yet and offline work.
 - Opening/retargeting a PR with `git-stack pr` or `reparent` keeps base in sync.
+- `git-stack pr` / TUI `P` writes a **Stack** section (with PR links) at the top of the PR body between `<!-- git-stack -->` markers so it can be updated without clobbering the rest of the description.
 
 ## Safety
 
