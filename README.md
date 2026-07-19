@@ -88,7 +88,7 @@ Trunk is never absorbed unless `--onto-trunk`.
 | `P` | Open/retarget PR |
 | `c` | Create child (suffix prompt) |
 | `f` | Fetch origin |
-| `F` | Pull selected (fetch + FF-only) |
+| `F` | Pull selected (fetch + rebase onto origin) |
 | `y` | Copy branch name to clipboard |
 | `Y` | Copy commit SHA to clipboard |
 | `ctrl+r` | Refresh list + PR parents |

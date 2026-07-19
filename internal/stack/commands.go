@@ -65,8 +65,8 @@ func (e *Engine) DeleteLocal(opts DeleteOpts) error {
 	return nil
 }
 
-// Pull fetches origin and fast-forwards the local branch to origin/<branch>.
-// Refuses if diverged or ahead (no merge/rebase). Safe FF-only pull.
+// Pull fetches origin and rebases the local branch onto origin/<branch>
+// (git pull --rebase). In-sync / ahead are no-ops; behind or diverged rebase.
 func (e *Engine) Pull(branch string) error {
 	if branch == "" {
 		var err error
@@ -81,13 +81,9 @@ func (e *Engine) Pull(branch string) error {
 	if err := e.Repo.RequireNoRebase(); err != nil {
 		return err
 	}
-	// Pulling the checked-out branch with a dirty tree is unsafe for merge;
-	// FF of non-current branch via branch -f is OK with dirty tree, but stay
-	// consistent and refuse dirty when HEAD is the target.
-	if cur, err := e.Repo.CurrentBranch(); err == nil && cur == branch {
-		if err := e.Repo.RequireClean(); err != nil {
-			return err
-		}
+	// Rebase (and checkout of a non-current branch) need a clean worktree.
+	if err := e.Repo.RequireClean(); err != nil {
+		return err
 	}
 
 	if err := e.FetchIfNeeded(false); err != nil {
@@ -102,17 +98,15 @@ func (e *Engine) Pull(branch string) error {
 	case git.RelInSync:
 		e.info("%s already in-sync with origin", branch)
 		return nil
-	case git.RelBehind:
-		if err := e.Repo.FFBranch(branch); err != nil {
-			return err
-		}
-		short, _ := e.Repo.ShortSHA("refs/remotes/origin/" + branch)
-		e.info("pulled %s → origin/%s (%s)", branch, branch, short)
-		return nil
 	case git.RelAhead:
 		return fmt.Errorf("%s is ahead of origin (nothing to pull; push if you want to publish)", branch)
-	case git.RelDiverged:
-		return fmt.Errorf("%s\n\npull is FF-only; resolve divergence first", e.DivergePlaybook(branch))
+	case git.RelBehind, git.RelDiverged:
+		if err := e.Repo.RebaseOntoOrigin(branch); err != nil {
+			return fmt.Errorf("%w\n\nResolve conflicts, then: git rebase --continue\nOr abort: git rebase --abort", err)
+		}
+		short, _ := e.Repo.ShortSHA("refs/heads/" + branch)
+		e.info("pulled (rebase) %s onto origin/%s (%s)", branch, branch, short)
+		return nil
 	default:
 		return fmt.Errorf("cannot pull %s (remote relation: %s)", branch, rel)
 	}

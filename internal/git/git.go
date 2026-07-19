@@ -263,6 +263,17 @@ func (r *Repo) FFBranch(branch string) error {
 	return r.runOK("branch", "-f", branch, remoteRef)
 }
 
+// RebaseOntoOrigin rebases branch onto origin/<branch> (pull --rebase).
+// When branch is not HEAD, git checks it out first.
+func (r *Repo) RebaseOntoOrigin(branch string) error {
+	upstream := "refs/remotes/origin/" + branch
+	cur, err := r.CurrentBranch()
+	if err == nil && cur == branch {
+		return r.runOK("rebase", upstream)
+	}
+	return r.runOK("rebase", upstream, branch)
+}
+
 // SwitchCreate creates and checks out a new branch from startRef.
 func (r *Repo) SwitchCreate(name, startRef string) error {
 	return r.runOK("switch", "-c", name, startRef)
