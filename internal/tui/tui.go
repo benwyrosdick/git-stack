@@ -109,12 +109,13 @@ type model struct {
 	infos     []stack.BranchInfo
 	cursor    int
 	current   string
-	status    string
+	status    string // busy / last action text
+	lastMsg   string // single status line under help
+	lastIsErr bool
 	errMsg    string
 	errScroll int // first visible line in error overlay
 	showHelp  bool
 	showError bool // full-screen multiline error overlay
-	log       []string
 	width     int
 	height    int
 	busy      bool
@@ -196,22 +197,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		if msg.err != nil {
 			m.errMsg = strings.TrimRight(msg.err.Error(), "\n")
-			m.errScroll = 0 // start at top so summary is visible
+			m.errScroll = 0
 			m.showError = true
-			// One short log line for the footer history
-			first := firstLine(m.errMsg)
-			m.log = append(m.log, "error: "+first)
+			m.lastMsg = firstLine(m.errMsg)
+			m.lastIsErr = true
+			m.status = ""
 		} else {
 			m.errMsg = ""
 			m.errScroll = 0
 			m.showError = false
+			m.lastIsErr = false
 			if msg.msg != "" {
 				m.status = msg.msg
-				m.log = append(m.log, msg.msg)
+				m.lastMsg = msg.msg
 			}
-		}
-		if len(m.log) > 20 {
-			m.log = m.log[len(m.log)-20:]
 		}
 		return m, m.reload()
 
@@ -568,24 +567,9 @@ func (m model) View() string {
 	b.WriteString("\n")
 	if m.input != inputNone {
 		b.WriteString(m.prompt + m.inputBuf + "█\n")
-	} else if m.busy {
-		b.WriteString(dimStyle.Render("… "+m.status) + "\n")
-	} else if m.status != "" {
-		b.WriteString(logStyle.Render(m.status) + "\n")
 	}
 
-	if len(m.log) > 0 {
-		b.WriteString(dimStyle.Render("─") + "\n")
-		start := 0
-		if len(m.log) > 3 {
-			start = len(m.log) - 3
-		}
-		for _, l := range m.log[start:] {
-			b.WriteString(dimStyle.Render(truncateLine(l, m.width)) + "\n")
-		}
-	}
-
-	b.WriteString("\n" + helpKeys(
+	b.WriteString(helpKeys(
 		"j/k", "move",
 		"enter", "checkout",
 		"r", "restack",
@@ -600,7 +584,20 @@ func (m model) View() string {
 		"F", "pull",
 		"?", "help",
 		"q", "quit",
-	))
+	) + "\n")
+
+	// Single status line under help.
+	switch {
+	case m.busy:
+		b.WriteString(dimStyle.Render("… " + truncateLine(m.status, m.width)))
+	case m.lastMsg != "":
+		line := truncateLine(m.lastMsg, m.width)
+		if m.lastIsErr {
+			b.WriteString(errStyle.Render(line))
+		} else {
+			b.WriteString(logStyle.Render(line))
+		}
+	}
 	return b.String()
 }
 
