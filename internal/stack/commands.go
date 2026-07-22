@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/benwyrosdick/git-stack/internal/git"
 )
@@ -814,16 +815,53 @@ func (e *Engine) inStackGraph(b string) bool {
 	return err == nil && len(kids) > 0
 }
 
-// FormatList prints ls-style lines with ASCII tree connectors.
+// FormatList prints ls-style lines with ASCII tree connectors and aligned columns.
 func FormatList(root string, infos []BranchInfo) string {
 	// Ensure prefixes exist even if caller skipped OrderAsTree.
 	if len(infos) > 0 && infos[0].TreePrefix == "" && len(infos) > 1 {
 		infos = OrderAsTree(infos)
 	}
+	// Use display width (runes), not bytes — tree glyphs are multi-byte UTF-8.
+	branchW, shaW, ownW, statusW, remoteW := 8, 7, 3, dispWidth("[needs-restack]"), dispWidth("diverged")
+	for _, info := range infos {
+		if n := dispWidth(info.TreePrefix) + dispWidth(info.Name); n > branchW {
+			branchW = n
+		}
+		if n := dispWidth(info.ShortSHA); n > shaW {
+			shaW = n
+		}
+		if n := dispWidth("+" + info.OwnCommits); n > ownW {
+			ownW = n
+		}
+		if n := dispWidth("[" + string(info.Status) + "]"); n > statusW {
+			statusW = n
+		}
+		if n := dispWidth(string(info.Remote)); n > remoteW {
+			remoteW = n
+		}
+	}
 	var b strings.Builder
 	for _, info := range infos {
-		fmt.Fprintf(&b, "%s%s  (base: %s)  %s  +%s commits  [%s]\n",
-			info.TreePrefix, info.Name, info.Parent, info.ShortSHA, info.OwnCommits, info.Status)
+		branch := padDisplay(info.TreePrefix+info.Name, branchW)
+		sha := padDisplay(info.ShortSHA, shaW)
+		own := padDisplay("+"+info.OwnCommits, ownW)
+		st := padDisplay("["+string(info.Status)+"]", statusW)
+		rel := padDisplay(string(info.Remote), remoteW)
+		fmt.Fprintf(&b, "%s  %s  %s  %s  %s  base:%s\n",
+			branch, sha, own, st, rel, info.Parent)
 	}
 	return b.String()
+}
+
+// dispWidth is terminal columns for s (box-drawing runes are width 1).
+func dispWidth(s string) int {
+	return utf8.RuneCountInString(s)
+}
+
+func padDisplay(s string, w int) string {
+	n := dispWidth(s)
+	if n >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-n)
 }

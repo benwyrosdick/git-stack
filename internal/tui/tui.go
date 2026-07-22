@@ -140,22 +140,22 @@ func Run(repo *git.Repo, offline, refresh bool) error {
 }
 
 type model struct {
-	repo      *git.Repo
-	eng       *stack.Engine
-	offline   bool
-	refresh   bool // force PR parent map refresh on next reload
-	infos     []stack.BranchInfo
-	cursor    int
-	current   string
-	status    string // busy / last action text
-	lastMsg   string // single status line under help
-	lastIsErr bool
-	errMsg    string
-	errScroll int // first visible line in error overlay
-	showHelp  bool
-	showError bool // full-screen multiline error overlay
-	width     int
-	height    int
+	repo         *git.Repo
+	eng          *stack.Engine
+	offline      bool
+	refresh      bool // force PR parent map refresh on next reload
+	infos        []stack.BranchInfo
+	cursor       int
+	current      string
+	status       string // busy / last action text
+	lastMsg      string // single status line under help
+	lastIsErr    bool
+	errMsg       string
+	errScroll    int // first visible line in error overlay
+	showHelp     bool
+	showError    bool // full-screen multiline error overlay
+	width        int
+	height       int
 	busy         bool
 	input        inputMode
 	prompt       string
@@ -678,19 +678,23 @@ func (m model) View() string {
 	if n := len(m.infos); n > 0 {
 		count = dimStyle.Render(fmt.Sprintf("  %d branches", n))
 	}
-	b.WriteString(titleStyle.Render("git-stack") + dimStyle.Render("  stacks") + count + "\n")
-	if m.width > 0 {
-		b.WriteString(sepStyle.Render(strings.Repeat("─", min(m.width, 80))) + "\n")
-	} else {
-		b.WriteString("\n")
+	header := titleStyle.Render("git-stack") + dimStyle.Render("  stacks") + count
+	b.WriteString(header + "\n")
+
+	var cols colLayout
+	if len(m.infos) > 0 {
+		cols = columnLayout(m.infos)
 	}
+	// Separators match content width (not a fixed 80).
+	sepW := contentSepWidth(cols, header, m.width)
+	b.WriteString(sepStyle.Render(strings.Repeat("─", sepW)) + "\n")
 
 	if len(m.infos) == 0 {
 		b.WriteString(dimStyle.Render("  no stacked branches") + "\n")
 		b.WriteString(dimStyle.Render("  try: git-stack create feature && git-stack create child --from feature") + "\n")
 	} else {
 		for i, info := range m.infos {
-			b.WriteString(m.renderRow(i, info) + "\n")
+			b.WriteString(m.renderRow(i, info, cols) + "\n")
 		}
 	}
 
@@ -702,9 +706,7 @@ func (m model) View() string {
 		b.WriteString(errStyle.Render("confirm") + " " + m.prompt + "\n")
 	}
 
-	if m.width > 0 {
-		b.WriteString(sepStyle.Render(strings.Repeat("─", min(m.width, 80))) + "\n")
-	}
+	b.WriteString(sepStyle.Render(strings.Repeat("─", sepW)) + "\n")
 	b.WriteString(helpKeys(
 		"j/k", "move",
 		"enter", "checkout",
@@ -736,9 +738,79 @@ func (m model) View() string {
 	return b.String()
 }
 
+// colLayout fixed display widths so SHA / status / remote columns align.
+// Widths are terminal cells (not bytes) — tree glyphs are multi-byte UTF-8.
+type colLayout struct {
+	branch int // tree prefix + name
+	sha    int
+	own    int
+	status int
+	remote int
+}
+
+// contentSepWidth is how wide header/footer rules should be: as wide as the
+// branch table (or header text), capped at the terminal width when known.
+func contentSepWidth(cols colLayout, header string, termW int) int {
+	// marker(2) + branch + gaps(2*4) + sha + own + status + remote + head mark(~3)
+	tableW := 2 + cols.branch + 2 + cols.sha + 2 + cols.own + 2 + cols.status + 2 + cols.remote + 3
+	w := tableW
+	if hw := lipgloss.Width(header); hw > w {
+		w = hw
+	}
+	if w < 40 {
+		w = 40
+	}
+	if termW > 0 && w > termW {
+		return termW
+	}
+	return w
+}
+
+func columnLayout(infos []stack.BranchInfo) colLayout {
+	cols := colLayout{
+		branch: 8,
+		sha:    7,
+		own:    3,
+		status: lipgloss.Width("[needs-restack]"),
+		remote: lipgloss.Width("diverged"),
+	}
+	for _, info := range infos {
+		// Plain text: lipgloss.Width == rune count for our tree chars.
+		bw := lipgloss.Width(info.TreePrefix) + lipgloss.Width(info.Name)
+		if bw > cols.branch {
+			cols.branch = bw
+		}
+		if n := lipgloss.Width(info.ShortSHA); n > cols.sha {
+			cols.sha = n
+		}
+		if n := lipgloss.Width("+" + info.OwnCommits); n > cols.own {
+			cols.own = n
+		}
+		if n := lipgloss.Width("[" + string(info.Status) + "]"); n > cols.status {
+			cols.status = n
+		}
+		if n := lipgloss.Width(string(info.Remote)); n > cols.remote {
+			cols.remote = n
+		}
+	}
+	return cols
+}
+
+func padVisual(s string, w int, bg *lipgloss.Color) string {
+	n := lipgloss.Width(s)
+	if n >= w {
+		return s
+	}
+	pad := strings.Repeat(" ", w-n)
+	if bg != nil {
+		return s + lipgloss.NewStyle().Background(*bg).Render(pad)
+	}
+	return s + pad
+}
+
 // renderRow draws one branch line. Selection = chevron + muted full-row bg.
 // Checked-out branch uses the magenta accent (independent of selection).
-func (m model) renderRow(i int, info stack.BranchInfo) string {
+func (m model) renderRow(i int, info stack.BranchInfo, cols colLayout) string {
 	selected := i == m.cursor
 	isHead := info.Name == m.current
 
@@ -748,7 +820,7 @@ func (m model) renderRow(i int, info stack.BranchInfo) string {
 		bg = &c
 	}
 
-	// Chevron / gutter
+	// Chevron / gutter (always 2 cells)
 	var marker string
 	if selected {
 		marker = styleOn(bg, colAccent, true).Render(">") + styleOn(bg, colFg, false).Render(" ")
@@ -756,9 +828,8 @@ func (m model) renderRow(i int, info stack.BranchInfo) string {
 		marker = styleOn(bg, colDim, false).Render("  ")
 	}
 
+	// Branch column: tree + name, pad by display width (not bytes).
 	tree := styleOn(bg, colDim, false).Render(info.TreePrefix)
-
-	// Name: HEAD gets accent; selection relies on bg rather than recoloring.
 	var name string
 	switch {
 	case isHead:
@@ -768,20 +839,28 @@ func (m model) renderRow(i int, info stack.BranchInfo) string {
 	default:
 		name = styleOn(bg, colFg, false).Render(info.Name)
 	}
+	branchUsed := lipgloss.Width(info.TreePrefix) + lipgloss.Width(info.Name)
+	branchPad := cols.branch - branchUsed
+	if branchPad < 0 {
+		branchPad = 0
+	}
+	branchCol := tree + name
+	if branchPad > 0 {
+		branchCol += styleOn(bg, colDim, false).Render(strings.Repeat(" ", branchPad))
+	}
 
-	sha := styleOn(bg, colMuted, false).Render(info.ShortSHA)
-	own := styleOn(bg, colMuted, false).Render("+" + info.OwnCommits)
+	gap := styleOn(bg, colFg, false).Render("  ")
+	sha := padVisual(styleOn(bg, colMuted, false).Render(info.ShortSHA), cols.sha, bg)
+	own := padVisual(styleOn(bg, colMuted, false).Render("+"+info.OwnCommits), cols.own, bg)
+	st := padVisual(statusStyled(info.Status, bg), cols.status, bg)
+	rel := padVisual(remoteStyled(info.Remote, bg), cols.remote, bg)
 
 	head := ""
 	if isHead {
 		head = styleOn(bg, colAccent, true).Render("  ●")
 	}
 
-	gap := styleOn(bg, colFg, false).Render("  ")
-	line := marker + tree + name + gap + sha + gap + own + gap +
-		statusStyled(info.Status, bg) + gap +
-		remoteStyled(info.Remote, bg) + head
-
+	line := marker + branchCol + gap + sha + gap + own + gap + st + gap + rel + head
 	if selected {
 		line = padRow(line, m.width, bg)
 	}
