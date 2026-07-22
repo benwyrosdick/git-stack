@@ -57,8 +57,8 @@ git-stack reparent ui-work other-api       # move stacks without rename
 
 ```
 main
-└── wms-batching           # parent: main
-    └── wms-batching.ui    # parent: wms-batching
+└─ wms-batching           # parent: main
+    └─ wms-batching.ui    # parent: wms-batching
 ```
 
 ### restack vs sync

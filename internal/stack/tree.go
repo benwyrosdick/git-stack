@@ -3,7 +3,7 @@ package stack
 import "sort"
 
 // OrderAsTree reorders infos into DFS tree order and sets TreePrefix
-// (├── └── │) based on parent relationships among the listed branches.
+// (├─ └─ │) based on parent relationships among the listed branches.
 func OrderAsTree(infos []BranchInfo) []BranchInfo {
 	if len(infos) == 0 {
 		return infos
@@ -50,9 +50,9 @@ func OrderAsTree(infos []BranchInfo) []BranchInfo {
 		conn := ""
 		if !isRoot {
 			if isLast {
-				conn = "└── "
+				conn = "└─ "
 			} else {
-				conn = "├── "
+				conn = "├─ "
 			}
 		}
 		info.TreePrefix = prefix + conn
@@ -64,9 +64,9 @@ func OrderAsTree(infos []BranchInfo) []BranchInfo {
 			nextPrefix := prefix
 			if !isRoot {
 				if isLast {
-					nextPrefix += "    "
+					nextPrefix += "   "
 				} else {
-					nextPrefix += "│   "
+					nextPrefix += "│  "
 				}
 			}
 			walk(kid, nextPrefix, false, last)

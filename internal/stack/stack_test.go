@@ -571,7 +571,7 @@ func TestList(t *testing.T) {
 			if i.Name == "api.ui" && i.Status == stack.StatusOK {
 				found = true
 			}
-			if i.Name == "api.ui" && !strings.Contains(i.TreePrefix, "└──") && !strings.Contains(i.TreePrefix, "├──") {
+			if i.Name == "api.ui" && !strings.Contains(i.TreePrefix, "└─") && !strings.Contains(i.TreePrefix, "├─") {
 				t.Fatalf("api.ui missing tree connector: %q", i.TreePrefix)
 			}
 		}
@@ -579,7 +579,7 @@ func TestList(t *testing.T) {
 			t.Fatalf("api.ui not ok: %+v", infos)
 		}
 		text := stack.FormatList("", infos)
-		if !strings.Contains(text, "├──") && !strings.Contains(text, "└──") {
+		if !strings.Contains(text, "├─") && !strings.Contains(text, "└─") {
 			t.Fatalf("format missing connectors:\n%s", text)
 		}
 	})

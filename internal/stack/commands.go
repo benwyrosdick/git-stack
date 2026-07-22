@@ -673,7 +673,7 @@ type BranchInfo struct {
 	Status     BranchStatus
 	Depth      int
 	Remote     git.RemoteRelation
-	// TreePrefix is ASCII connectors, e.g. "│   ├── " (set by OrderAsTree).
+	// TreePrefix is ASCII connectors, e.g. "│   ├─ " (set by OrderAsTree).
 	TreePrefix string
 }
 
