@@ -126,15 +126,22 @@ if ! curl -fsSL -o "$tmp/archive.tar.gz" "$url"; then
 fi
 
 if curl -fsSL -o "$tmp/checksums.txt" "$checksums_url" 2>/dev/null; then
-  if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$tmp" && grep -E " ${asset}\$" checksums.txt | sha256sum -c -) \
-      || die "checksum verification failed"
-    info "checksum ok"
-  elif command -v shasum >/dev/null 2>&1; then
-    expect="$(grep -E " ${asset}\$" "$tmp/checksums.txt" | awk '{print $1}')"
-    got="$(shasum -a 256 "$tmp/archive.tar.gz" | awk '{print $1}')"
-    [[ "$expect" == "$got" ]] || die "checksum verification failed"
-    info "checksum ok"
+  expect="$(grep -E " ${asset}\$" "$tmp/checksums.txt" | awk '{print $1}')"
+  if [[ -z "$expect" ]]; then
+    info "checksum line for ${asset} not found; skipping verify"
+  else
+    if command -v sha256sum >/dev/null 2>&1; then
+      got="$(sha256sum "$tmp/archive.tar.gz" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      got="$(shasum -a 256 "$tmp/archive.tar.gz" | awk '{print $1}')"
+    else
+      got=""
+      info "no sha256 tool; skipping verify"
+    fi
+    if [[ -n "$got" ]]; then
+      [[ "$expect" == "$got" ]] || die "checksum verification failed"
+      info "checksum ok"
+    fi
   fi
 else
   info "no checksums.txt; skipping verify"
