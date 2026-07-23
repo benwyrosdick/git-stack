@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Install git-stack from GitHub Releases.
+# Install git-stack from GitHub Releases (or go install as fallback).
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/benwyrosdick/git-stack/main/scripts/install.sh | bash
+#
+# Env:
+#   GIT_STACK_REPO          default: benwyrosdick/git-stack
+#   GIT_STACK_VERSION       pin a tag, e.g. v0.1.0
+#   GIT_STACK_INSTALL_DIR   default: ~/.local/bin
+#   GIT_STACK_FROM_SOURCE=1 force go install instead of release binary
 set -euo pipefail
 
 REPO="${GIT_STACK_REPO:-benwyrosdick/git-stack}"
@@ -16,7 +22,6 @@ need_cmd() {
 }
 
 need_cmd curl
-need_cmd tar
 need_cmd uname
 need_cmd mktemp
 
@@ -32,32 +37,76 @@ case "$os" in
   *) die "unsupported OS: $os" ;;
 esac
 
-# Resolve latest tag
-if [[ -n "${GIT_STACK_VERSION:-}" ]]; then
-  tag="$GIT_STACK_VERSION"
-  [[ "$tag" == v* ]] || tag="v$tag"
-else
-  tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | head -1)"
-  [[ -n "$tag" ]] || die "could not resolve latest release for ${REPO} (has a release been published?)"
+install_from_source() {
+  need_cmd go
+  info "installing from source via go install"
+  GOBIN="$INSTALL_DIR" go install "github.com/${REPO}/cmd/git-stack@latest"
+  info "installed ${INSTALL_DIR}/${BIN_NAME}"
+  if ! command -v "$BIN_NAME" >/dev/null 2>&1; then
+    info "add to PATH: export PATH=\"${INSTALL_DIR}:\$PATH\""
+  fi
+  "${INSTALL_DIR}/${BIN_NAME}" version 2>/dev/null || true
+  info "done. run: git-stack help"
+  exit 0
+}
+
+if [[ "${GIT_STACK_FROM_SOURCE:-}" == "1" ]]; then
+  install_from_source
 fi
 
-asset="${BIN_NAME}_${tag#v}_${os}_${arch}.tar.gz"
-# GoReleaser default: project_version_os_arch
-# Also try without 'v' stripped variants
+need_cmd tar
+
+# Resolve latest tag from GitHub Releases API
+resolve_tag() {
+  if [[ -n "${GIT_STACK_VERSION:-}" ]]; then
+    local t="$GIT_STACK_VERSION"
+    [[ "$t" == v* ]] || t="v$t"
+    echo "$t"
+    return 0
+  fi
+  local api json t
+  api="https://api.github.com/repos/${REPO}/releases/latest"
+  if ! json="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api" 2>/dev/null)"; then
+    return 1
+  fi
+  # Prefer jq if present; else sed
+  if command -v jq >/dev/null 2>&1; then
+    t="$(printf '%s' "$json" | jq -r '.tag_name // empty')"
+  else
+    t="$(printf '%s' "$json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  fi
+  [[ -n "$t" && "$t" != "null" ]] || return 1
+  echo "$t"
+}
+
+tag=""
+if ! tag="$(resolve_tag)"; then
+  info "no GitHub release found for ${REPO}"
+  if command -v go >/dev/null 2>&1; then
+    info "falling back to go install"
+    install_from_source
+  fi
+  die "no release published yet and 'go' is not on PATH.
+  Publish a release (git tag v0.1.0 && git push origin v0.1.0), or install with:
+    go install github.com/${REPO}/cmd/git-stack@latest"
+fi
+
+# GoReleaser name_template: {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+# Version is usually without leading v.
+ver="${tag#v}"
+asset="${BIN_NAME}_${ver}_${os}_${arch}.tar.gz"
 url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 checksums_url="https://github.com/${REPO}/releases/download/${tag}/checksums.txt"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+info "version ${tag} (${os}/${arch})"
 info "downloading ${url}"
 if ! curl -fsSL -o "$tmp/archive.tar.gz" "$url"; then
-  # alternate asset name patterns
   for alt in \
-    "${BIN_NAME}_${os}_${arch}.tar.gz" \
-    "${BIN_NAME}_${tag}_${os}_${arch}.tar.gz"
+    "${BIN_NAME}_${tag}_${os}_${arch}.tar.gz" \
+    "${BIN_NAME}_${os}_${arch}.tar.gz"
   do
     url="https://github.com/${REPO}/releases/download/${tag}/${alt}"
     info "retry ${url}"
@@ -66,8 +115,14 @@ if ! curl -fsSL -o "$tmp/archive.tar.gz" "$url"; then
       break
     fi
   done
-  [[ -f "$tmp/archive.tar.gz" && -s "$tmp/archive.tar.gz" ]] \
-    || die "download failed; check that release ${tag} has a binary for ${os}/${arch}"
+  if [[ ! -s "$tmp/archive.tar.gz" ]]; then
+    if command -v go >/dev/null 2>&1; then
+      info "binary download failed; falling back to go install"
+      install_from_source
+    fi
+    die "download failed for ${tag} ${os}/${arch}
+  Check: https://github.com/${REPO}/releases/tag/${tag}"
+  fi
 fi
 
 if curl -fsSL -o "$tmp/checksums.txt" "$checksums_url" 2>/dev/null; then
