@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -163,14 +164,82 @@ func (r *Repo) RevListOneline(revRange string) (string, error) {
 
 // LocalBranches lists short names under refs/heads/.
 func (r *Repo) LocalBranches() ([]string, error) {
-	out, err := r.run("for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	tips, err := r.ListRefTips("refs/heads/")
 	if err != nil {
 		return nil, err
 	}
-	if out == "" {
-		return nil, nil
+	out := make([]string, 0, len(tips))
+	for name := range tips {
+		out = append(out, name)
 	}
-	return strings.Split(out, "\n"), nil
+	sort.Strings(out)
+	return out, nil
+}
+
+// ListRefTips returns ref short-name → full object id for refs under prefix
+// (e.g. "refs/heads/", "refs/remotes/origin/"). One git process.
+func (r *Repo) ListRefTips(prefix string) (map[string]string, error) {
+	out, err := r.run("for-each-ref", "--format=%(refname:short) %(objectname)", prefix)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]string)
+	if out == "" {
+		return m, nil
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// "name sha" — name may contain spaces rarely; split on last space
+		i := strings.LastIndex(line, " ")
+		if i <= 0 {
+			continue
+		}
+		name, sha := line[:i], line[i+1:]
+		if name == "" || sha == "" {
+			continue
+		}
+		m[name] = sha
+	}
+	return m, nil
+}
+
+// ListStackParentConfig returns branch → gitstack-parent from local config.
+// One git process: git config --get-regexp.
+func (r *Repo) ListStackParentConfig() (map[string]string, error) {
+	out, err := r.run("config", "--get-regexp", `^branch\..+\.gitstack-parent$`)
+	if err != nil {
+		// git exits 1 when no matches
+		if out == "" {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	m := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// branch.<name>.gitstack-parent <value>
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		key, val := fields[0], fields[1]
+		// key = branch.NAME.gitstack-parent — name may contain dots
+		const pfx, sfx = "branch.", ".gitstack-parent"
+		if !strings.HasPrefix(key, pfx) || !strings.HasSuffix(key, sfx) {
+			continue
+		}
+		name := key[len(pfx) : len(key)-len(sfx)]
+		if name != "" && val != "" {
+			m[name] = val
+		}
+	}
+	return m, nil
 }
 
 // StatusPorcelainUno returns porcelain status for tracked files only (-uno).

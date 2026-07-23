@@ -682,10 +682,15 @@ type BranchInfo struct {
 // When root is empty, trunk is first, then every branch in a stack graph
 // (PR parent, local parent, dots, or ancestor of such).
 func (e *Engine) List(root string) ([]BranchInfo, error) {
-	trunk := e.Repo.DefaultBranch()
+	// Fresh bulk index each List (few git calls; tips stay correct after restack).
+	e.invalidateIndex()
+	if err := e.ensureIndex(); err != nil {
+		return nil, err
+	}
+	trunk := e.trunk()
 	var list []string
 	if root != "" {
-		if !e.Repo.RefExists(root) {
+		if !e.refExists(root) {
 			return nil, fmt.Errorf("branch does not exist: %s", root)
 		}
 		list = append(list, root)
@@ -695,12 +700,16 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 		}
 		list = append(list, e.SortByDepth(kids)...)
 	} else {
-		all, err := e.Repo.LocalBranches()
-		if err != nil {
-			return nil, err
+		all := e.idx.locals
+		if all == nil {
+			var err error
+			all, err = e.Repo.LocalBranches()
+			if err != nil {
+				return nil, err
+			}
 		}
 		seen := map[string]bool{}
-		if e.Repo.RefExists(trunk) {
+		if e.refExists(trunk) {
 			list = append(list, trunk)
 			seen[trunk] = true
 		}
@@ -715,7 +724,7 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 				// include ancestors so free-named middles appear
 				cur := e.ParentOf(b)
 				for i := 0; i < 64 && cur != "" && !e.IsTrunk(cur) && !seen[cur]; i++ {
-					if e.Repo.LocalBranchExists(cur) || e.Repo.RefExists(cur) {
+					if e.localExists(cur) || e.refExists(cur) {
 						seen[cur] = true
 						list = append(list, cur)
 					}
@@ -741,12 +750,7 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 	var infos []BranchInfo
 	for _, b := range list {
 		parent := e.ParentOf(b)
-		short := "?"
-		if ref, err := e.Repo.ResolveRef(b); err == nil {
-			if s, err := e.Repo.ShortSHA(ref); err == nil {
-				short = s
-			}
-		}
+		short := e.shortTip(b)
 		own := "?"
 		status := StatusMissingParent
 		depth := e.BranchDepth(b)
@@ -757,21 +761,37 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 			own = "0"
 			status = StatusOK
 			depth = 0
-		} else if e.Repo.RefExists(parent) {
-			pref, _ := e.Repo.ResolveRef(parent)
-			bref, _ := e.Repo.ResolveRef(b)
-			if n, err := e.Repo.RevListCount(pref + ".." + bref); err == nil {
-				own = fmt.Sprintf("%d", n)
-			}
-			if e.Repo.IsAncestor(pref, bref) {
-				status = StatusOK
+		} else if e.refExists(parent) {
+			bTip, okB := e.tipSHA(b)
+			pTip, okP := e.tipSHA(parent)
+			if okB && okP {
+				// Prefer full SHAs from index for ancestry/count.
+				if n, err := e.Repo.RevListCount(pTip + ".." + bTip); err == nil {
+					own = fmt.Sprintf("%d", n)
+				}
+				if e.Repo.IsAncestor(pTip, bTip) {
+					status = StatusOK
+				} else {
+					status = StatusNeedsRestack
+				}
 			} else {
-				status = StatusNeedsRestack
+				pref, err1 := e.Repo.ResolveRef(parent)
+				bref, err2 := e.Repo.ResolveRef(b)
+				if err1 == nil && err2 == nil {
+					if n, err := e.Repo.RevListCount(pref + ".." + bref); err == nil {
+						own = fmt.Sprintf("%d", n)
+					}
+					if e.Repo.IsAncestor(pref, bref) {
+						status = StatusOK
+					} else {
+						status = StatusNeedsRestack
+					}
+				}
 			}
 		}
 		rel := git.RelNone
-		if e.Repo.LocalBranchExists(b) {
-			rel = e.Repo.RemoteRelationOf(b)
+		if e.localExists(b) {
+			rel = e.remoteRelationCached(b)
 		}
 		infos = append(infos, BranchInfo{
 			Name:       b,
@@ -787,12 +807,13 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 }
 
 // inStackGraph reports whether branch participates in a stack (not only trunk).
+// Same meaning as before; uses precomputed children map instead of N² DescendantsOf.
 func (e *Engine) inStackGraph(b string) bool {
 	if e.IsTrunk(b) {
 		return false
 	}
 	// Explicit local parent
-	if e.Repo.GetStackParent(b) != "" {
+	if e.configParentOf(b) != "" {
 		return true
 	}
 	// Open PR with a base
@@ -810,9 +831,8 @@ func (e *Engine) inStackGraph(b string) bool {
 	if p != "" && !e.IsTrunk(p) {
 		return true
 	}
-	// Has children in the graph
-	kids, err := e.DescendantsOf(b)
-	return err == nil && len(kids) > 0
+	// Has children in the stack parent graph (O(1) with index)
+	return e.hasStackChildren(b)
 }
 
 // FormatList prints ls-style lines with ASCII tree connectors and aligned columns.

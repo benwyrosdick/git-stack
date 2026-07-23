@@ -20,6 +20,9 @@ type Engine struct {
 
 	// prParents is head → base from open PRs (bulk-loaded via LoadParents).
 	prParents map[string]string
+
+	// idx is a bulk-loaded memo for fast List / ParentOf (see index.go).
+	idx *repoIndex
 }
 
 func (e *Engine) info(format string, args ...any) {
@@ -56,7 +59,7 @@ func (e *Engine) SlashRefConflict(name string) (string, bool) {
 
 // IsTrunk reports whether name is the default branch.
 func (e *Engine) IsTrunk(name string) bool {
-	return name == e.Repo.DefaultBranch()
+	return name == e.trunk()
 }
 
 // TrunkRef prefers origin/trunk, else local trunk.

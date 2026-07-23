@@ -71,6 +71,7 @@ func (e *Engine) LoadParents(opts LoadParentsOpts) error {
 // InvalidateParentCache drops in-memory and on-disk PR parent cache.
 func (e *Engine) InvalidateParentCache() {
 	e.prParents = nil
+	e.invalidateIndex()
 	if gd, err := e.Repo.GitDir(); err == nil {
 		gh.InvalidatePRParentCache(gd)
 	}
@@ -85,34 +86,50 @@ func (e *Engine) ParentOf(branch string) string {
 
 // ParentOfWithSource is ParentOf plus how it was resolved.
 func (e *Engine) ParentOfWithSource(branch string) (string, ParentSource) {
-	trunk := e.Repo.DefaultBranch()
+	if e.idx != nil {
+		if p, ok := e.idx.parent[branch]; ok {
+			return p, e.idx.parentSrc[branch]
+		}
+	}
+
+	trunk := e.trunk()
 	if branch == "" || branch == trunk || e.IsTrunk(branch) {
+		e.memoParent(branch, trunk, SourceTrunk)
 		return trunk, SourceTrunk
 	}
 
 	// 1. Open PR base (shared)
 	if e.prParents != nil {
 		if base, ok := e.prParents[branch]; ok && base != "" {
-			if local := e.Repo.GetStackParent(branch); local != "" && local != base {
-				// PR wins; mention once per branch would be noisy — skip
-			}
+			e.memoParent(branch, base, SourcePR)
 			return base, SourcePR
 		}
 	}
 
-	// 2. Local config
-	if local := e.Repo.GetStackParent(branch); local != "" {
+	// 2. Local config (bulk-loaded when index is present)
+	if local := e.configParentOf(branch); local != "" {
+		e.memoParent(branch, local, SourceLocal)
 		return local, SourceLocal
 	}
 
 	// 3. Dot-depth inference
-	if p := parentFromDots(branch, e.Repo.RefExists, trunk); p != trunk || strings.Contains(branch, ".") {
+	if p := parentFromDots(branch, e.refExists, trunk); p != trunk || strings.Contains(branch, ".") {
 		if p != branch {
+			e.memoParent(branch, p, SourceDots)
 			return p, SourceDots
 		}
 	}
 
+	e.memoParent(branch, trunk, SourceTrunk)
 	return trunk, SourceTrunk
+}
+
+func (e *Engine) memoParent(branch, parent string, src ParentSource) {
+	if e.idx == nil || branch == "" {
+		return
+	}
+	e.idx.parent[branch] = parent
+	e.idx.parentSrc[branch] = src
 }
 
 // parentFromDots walks off last "." segment until a ref exists; else trunk.
@@ -138,8 +155,14 @@ func DotBranchDepth(b string) int {
 
 // BranchDepth is graph distance from trunk (0 = trunk), cycle-safe.
 func (e *Engine) BranchDepth(branch string) int {
-	trunk := e.Repo.DefaultBranch()
+	if e.idx != nil {
+		if d, ok := e.idx.depth[branch]; ok {
+			return d
+		}
+	}
+	trunk := e.trunk()
 	if branch == trunk || e.IsTrunk(branch) {
+		e.memoDepth(branch, 0)
 		return 0
 	}
 	seen := map[string]bool{}
@@ -147,17 +170,26 @@ func (e *Engine) BranchDepth(branch string) int {
 	cur := branch
 	for depth < 64 {
 		if seen[cur] {
+			e.memoDepth(branch, depth)
 			return depth
 		}
 		seen[cur] = true
 		p := e.ParentOf(cur)
 		if p == cur || p == trunk || e.IsTrunk(p) {
+			e.memoDepth(branch, depth+1)
 			return depth + 1
 		}
 		cur = p
 		depth++
 	}
+	e.memoDepth(branch, depth)
 	return depth
+}
+
+func (e *Engine) memoDepth(branch string, d int) {
+	if e.idx != nil {
+		e.idx.depth[branch] = d
+	}
 }
 
 // SetParentLocal records an explicit parent in local config.
@@ -217,6 +249,23 @@ func (e *Engine) parentOfIgnoring(ignore, cur string) string {
 // DescendantsOf returns local branches that have root as an ancestor in the
 // parent graph (not name prefix).
 func (e *Engine) DescendantsOf(root string) ([]string, error) {
+	if e.idx != nil {
+		// BFS over precomputed children map — no extra git.
+		var out []string
+		queue := append([]string{}, e.idx.children[root]...)
+		seen := map[string]bool{}
+		for len(queue) > 0 {
+			b := queue[0]
+			queue = queue[1:]
+			if seen[b] {
+				continue
+			}
+			seen[b] = true
+			out = append(out, b)
+			queue = append(queue, e.idx.children[b]...)
+		}
+		return out, nil
+	}
 	all, err := e.Repo.LocalBranches()
 	if err != nil {
 		return nil, err
@@ -235,7 +284,7 @@ func (e *Engine) DescendantsOf(root string) ([]string, error) {
 
 // hasAncestor reports whether ancestor appears in branch's ParentOf chain.
 func (e *Engine) hasAncestor(branch, ancestor string) bool {
-	trunk := e.Repo.DefaultBranch()
+	trunk := e.trunk()
 	seen := map[string]bool{}
 	cur := branch
 	for i := 0; i < 64; i++ {
@@ -357,6 +406,7 @@ func (e *Engine) Track(branch, parent string) error {
 	if err := e.SetParentLocal(branch, parent); err != nil {
 		return err
 	}
+	e.invalidateIndex()
 	e.info("set local parent %s → %s", branch, parent)
 
 	// PR base outranks local config. If a PR exists, retarget it and update the
@@ -448,6 +498,7 @@ func (e *Engine) Untrack(branch string) error {
 	if err := e.Repo.UnsetStackParent(branch); err != nil {
 		return err
 	}
+	e.invalidateIndex()
 	e.info("untracked local parent for %s (now: %s)", branch, e.ParentOf(branch))
 	return nil
 }
