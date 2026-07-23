@@ -693,6 +693,7 @@ func (m model) View() string {
 		b.WriteString(dimStyle.Render("  no stacked branches") + "\n")
 		b.WriteString(dimStyle.Render("  try: git-stack create feature && git-stack create child --from feature") + "\n")
 	} else {
+		b.WriteString(renderColHeaders(cols) + "\n")
 		for i, info := range m.infos {
 			b.WriteString(m.renderRow(i, info, cols) + "\n")
 		}
@@ -767,12 +768,20 @@ func contentSepWidth(cols colLayout, header string, termW int) int {
 }
 
 func columnLayout(infos []stack.BranchInfo) colLayout {
+	// Minimums also fit the column header labels.
 	cols := colLayout{
-		branch: 8,
-		sha:    7,
-		own:    3,
-		status: lipgloss.Width("[needs-restack]"),
-		remote: lipgloss.Width("diverged"),
+		branch: lipgloss.Width("BRANCH"),
+		sha:    lipgloss.Width("SHA"),
+		own:    lipgloss.Width("COMMITS"),
+		status: lipgloss.Width("STATUS"),
+		remote: lipgloss.Width("REMOTE"),
+	}
+	// Prefer status/remote mins that fit real values too.
+	if n := lipgloss.Width("[needs-restack]"); n > cols.status {
+		cols.status = n
+	}
+	if n := lipgloss.Width("diverged"); n > cols.remote {
+		cols.remote = n
 	}
 	for _, info := range infos {
 		// Plain text: lipgloss.Width == rune count for our tree chars.
@@ -794,6 +803,26 @@ func columnLayout(infos []stack.BranchInfo) colLayout {
 		}
 	}
 	return cols
+}
+
+// renderColHeaders prints dim column titles aligned with renderRow.
+func renderColHeaders(cols colLayout) string {
+	gap := "  "
+	pad := func(s string, w int) string {
+		n := lipgloss.Width(s)
+		if n >= w {
+			return s
+		}
+		return s + strings.Repeat(" ", w-n)
+	}
+	// "  " gutter matches selection chevron column.
+	line := "  " +
+		pad("BRANCH", cols.branch) + gap +
+		pad("SHA", cols.sha) + gap +
+		pad("COMMITS", cols.own) + gap +
+		pad("STATUS", cols.status) + gap +
+		pad("REMOTE", cols.remote)
+	return dimStyle.Render(line)
 }
 
 func padVisual(s string, w int, bg *lipgloss.Color) string {
