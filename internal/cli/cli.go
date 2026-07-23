@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/benwyrosdick/git-stack/internal/gh"
@@ -13,8 +14,44 @@ import (
 	"github.com/benwyrosdick/git-stack/internal/tui"
 )
 
-// Version is set via -ldflags at release time.
+// Version is set via -ldflags at release time (GoReleaser).
+// When left as "dev", ResolvedVersion falls back to module/VCS build info.
 var Version = "dev"
+
+// ResolvedVersion returns the release version when stamped, otherwise the
+// module version from go install, otherwise a short VCS revision for local builds.
+func ResolvedVersion() string {
+	if Version != "" && Version != "dev" {
+		return Version
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" {
+		return strings.TrimPrefix(v, "v")
+	}
+	var rev string
+	dirty := false
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+			if len(rev) > 7 {
+				rev = rev[:7]
+			}
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev != "" {
+		if dirty {
+			return "dev+" + rev + "-dirty"
+		}
+		return "dev+" + rev
+	}
+	return "dev"
+}
 
 // Run parses args and executes. args should be os.Args[1:].
 func Run(args []string) error {
@@ -30,6 +67,10 @@ func Run(args []string) error {
 			offline = true
 		case "--refresh":
 			refresh = true
+		case "--version", "-v":
+			// Allow as a global flag anywhere in the arg list.
+			fmt.Println(ResolvedVersion())
+			return nil
 		default:
 			filtered = append(filtered, a)
 		}
@@ -45,7 +86,7 @@ func Run(args []string) error {
 		printHelp(os.Stdout)
 		return nil
 	case "version", "--version", "-v":
-		fmt.Println(Version)
+		fmt.Println(ResolvedVersion())
 		return nil
 	case "parent":
 		return cmdParent(rest, offline, refresh)
