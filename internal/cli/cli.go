@@ -88,6 +88,8 @@ func Run(args []string) error {
 	case "version", "--version", "-v":
 		fmt.Println(ResolvedVersion())
 		return nil
+	case "upgrade":
+		return cmdUpgrade(rest)
 	case "parent":
 		return cmdParent(rest, offline, refresh)
 	case "create":
@@ -425,6 +427,7 @@ func printHelp(w io.Writer) {
   ls      [root]                           List stack tree
   tui                                      Open interactive TUI
   version                                  Print version
+  upgrade [--check] [--force]              Install a newer release if available
 
 Global flags:
   --offline     Do not call gh; use local config + cache + names

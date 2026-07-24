@@ -39,9 +39,12 @@ git-stack pr [branch] [--draft]
 git-stack track <branch> --parent <parent>   # metadata only
 git-stack untrack [branch]
 git-stack adopt [root]                       # write local parents from current resolution
+git-stack upgrade [--check] [--force]        # install a newer release if available
 ```
 
 Global flags: `--offline` (no `gh`), `--refresh` (force PR parent map reload).
+
+`git-stack upgrade` checks [GitHub Releases](https://github.com/benwyrosdick/git-stack/releases) for a newer version and replaces the running binary in place. Use `--check` to only report status; `--force` reinstalls even when already on the latest.
 
 ### Free names (recommended for reparenting)
 
