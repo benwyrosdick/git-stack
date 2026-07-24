@@ -1024,7 +1024,7 @@ func helpView() string {
 	b.WriteString(helpLine("p", "push selected (force-with-lease)") + "\n")
 	b.WriteString(helpLine("P", "create/retarget PR (gh)") + "\n")
 	b.WriteString(helpLine("f", "fetch origin") + "\n")
-	b.WriteString(helpLine("F", "pull selected (fetch + rebase onto origin)") + "\n")
+	b.WriteString(helpLine("F", "pull selected (ff if behind, rebase if diverged)") + "\n")
 	b.WriteString(helpLine("y", "copy branch name to clipboard") + "\n")
 	b.WriteString(helpLine("Y", "copy full commit SHA to clipboard") + "\n")
 	b.WriteString(helpLine("ctrl+r", "refresh list") + "\n\n")

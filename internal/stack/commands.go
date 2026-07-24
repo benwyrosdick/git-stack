@@ -66,8 +66,9 @@ func (e *Engine) DeleteLocal(opts DeleteOpts) error {
 	return nil
 }
 
-// Pull fetches origin and rebases the local branch onto origin/<branch>
-// (git pull --rebase). In-sync / ahead are no-ops; behind or diverged rebase.
+// Pull fetches origin and updates the local branch from origin/<branch>.
+// Purely behind → fast-forward only; diverged → rebase onto origin.
+// In-sync is a no-op; ahead errors (push instead).
 func (e *Engine) Pull(branch string) error {
 	if branch == "" {
 		var err error
@@ -82,7 +83,7 @@ func (e *Engine) Pull(branch string) error {
 	if err := e.Repo.RequireNoRebase(); err != nil {
 		return err
 	}
-	// Rebase (and checkout of a non-current branch) need a clean worktree.
+	// FF/rebase (and checkout of a non-current branch) need a clean worktree.
 	if err := e.Repo.RequireClean(); err != nil {
 		return err
 	}
@@ -101,7 +102,14 @@ func (e *Engine) Pull(branch string) error {
 		return nil
 	case git.RelAhead:
 		return fmt.Errorf("%s is ahead of origin (nothing to pull; push if you want to publish)", branch)
-	case git.RelBehind, git.RelDiverged:
+	case git.RelBehind:
+		if err := e.Repo.FFBranch(branch); err != nil {
+			return err
+		}
+		short, _ := e.Repo.ShortSHA("refs/heads/" + branch)
+		e.info("pulled (ff) %s → origin/%s (%s)", branch, branch, short)
+		return nil
+	case git.RelDiverged:
 		if err := e.Repo.RebaseOntoOrigin(branch); err != nil {
 			return fmt.Errorf("%w\n\nResolve conflicts, then: git rebase --continue\nOr abort: git rebase --abort", err)
 		}
