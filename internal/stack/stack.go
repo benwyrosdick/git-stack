@@ -34,10 +34,18 @@ func (e *Engine) info(format string, args ...any) {
 }
 
 func (e *Engine) rebaseOnto(onto, upstream, branch string) error {
+	var err error
 	if e.Quiet {
-		return e.Repo.RebaseOntoQuiet(onto, upstream, branch)
+		err = e.Repo.RebaseOntoQuiet(onto, upstream, branch)
+	} else {
+		err = e.Repo.RebaseOnto(onto, upstream, branch)
 	}
-	return e.Repo.RebaseOnto(onto, upstream, branch)
+	if err != nil {
+		// RebaseOnto* already aborts; ensure clean even if that path was partial.
+		_ = e.Repo.RebaseAbort()
+		return fmt.Errorf("rebase failed for %s (aborted; working tree clean)", branch)
+	}
+	return nil
 }
 
 // SlashRefConflict returns an existing ancestor path segment if name uses /
@@ -149,7 +157,7 @@ func (e *Engine) RestackBranch(branch, parent, parentRefOverride string) error {
 	}
 	e.info("restacking %s onto %s (replay %d commit(s) after %s)", branch, parent, n, short)
 	if err := e.rebaseOnto(parentRef, upstream, branch); err != nil {
-		return fmt.Errorf("conflict restacking %s onto %s\n\n  Fix: resolve conflicts, then: git rebase --continue\n  Abort this branch: git rebase --abort\n  Re-run when clean: git-stack sync <root>   # or git-stack restack %s", branch, parent, branch)
+		return fmt.Errorf("restack failed: %s onto %s (rebase aborted; working tree clean)", branch, parent)
 	}
 	e.info("restacked %s onto %s", branch, parent)
 	return nil

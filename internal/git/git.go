@@ -259,19 +259,32 @@ func (r *Repo) RequireClean() error {
 	return nil
 }
 
-// RequireNoRebase fails if a rebase is in progress.
-func (r *Repo) RequireNoRebase() error {
-	gd, err := r.run("rev-parse", "--git-path", "rebase-merge")
-	if err == nil {
+// InRebase reports whether a rebase is in progress.
+func (r *Repo) InRebase() bool {
+	for _, kind := range []string{"rebase-merge", "rebase-apply"} {
+		gd, err := r.run("rev-parse", "--git-path", kind)
+		if err != nil {
+			continue
+		}
 		if st, e := os.Stat(filepath.Clean(gd)); e == nil && st.IsDir() {
-			return fmt.Errorf("rebase in progress; finish with git rebase --continue or git rebase --abort")
+			return true
 		}
 	}
-	gd, err = r.run("rev-parse", "--git-path", "rebase-apply")
-	if err == nil {
-		if st, e := os.Stat(filepath.Clean(gd)); e == nil && st.IsDir() {
-			return fmt.Errorf("rebase in progress; finish with git rebase --continue or git rebase --abort")
-		}
+	return false
+}
+
+// RebaseAbort runs git rebase --abort (no-op if not rebasing).
+func (r *Repo) RebaseAbort() error {
+	if !r.InRebase() {
+		return nil
+	}
+	return r.runOK("rebase", "--abort")
+}
+
+// RequireNoRebase fails if a rebase is in progress.
+func (r *Repo) RequireNoRebase() error {
+	if r.InRebase() {
+		return fmt.Errorf("rebase in progress; finish with git rebase --continue or git rebase --abort")
 	}
 	return nil
 }
@@ -334,13 +347,20 @@ func (r *Repo) FFBranch(branch string) error {
 
 // RebaseOntoOrigin rebases branch onto origin/<branch> (pull --rebase).
 // When branch is not HEAD, git checks it out first.
+// On failure, aborts the rebase so the worktree is left clean.
 func (r *Repo) RebaseOntoOrigin(branch string) error {
 	upstream := "refs/remotes/origin/" + branch
-	cur, err := r.CurrentBranch()
-	if err == nil && cur == branch {
-		return r.runOK("rebase", upstream)
+	var err error
+	cur, cerr := r.CurrentBranch()
+	if cerr == nil && cur == branch {
+		err = r.runOK("rebase", upstream)
+	} else {
+		err = r.runOK("rebase", upstream, branch)
 	}
-	return r.runOK("rebase", upstream, branch)
+	if err != nil {
+		_ = r.RebaseAbort()
+	}
+	return err
 }
 
 // SwitchCreate creates and checks out a new branch from startRef.
@@ -364,13 +384,23 @@ func (r *Repo) ForceDeleteBranch(name string) error {
 }
 
 // RebaseOnto runs: git rebase --onto onto upstream branch
+// On failure, aborts the rebase so the worktree is left clean.
 func (r *Repo) RebaseOnto(onto, upstream, branch string) error {
-	return r.RunInteractive("rebase", "--onto", onto, upstream, branch)
+	err := r.RunInteractive("rebase", "--onto", onto, upstream, branch)
+	if err != nil {
+		_ = r.RebaseAbort()
+	}
+	return err
 }
 
-// RebaseOntoQuiet runs rebase without attaching to terminal (for tests).
+// RebaseOntoQuiet runs rebase without attaching to terminal (for tests / TUI).
+// On failure, aborts the rebase so the worktree is left clean.
 func (r *Repo) RebaseOntoQuiet(onto, upstream, branch string) error {
-	return r.runOK("rebase", "--onto", onto, upstream, branch)
+	err := r.runOK("rebase", "--onto", onto, upstream, branch)
+	if err != nil {
+		_ = r.RebaseAbort()
+	}
+	return err
 }
 
 // PushForceWithLease pushes branch with --force-with-lease.

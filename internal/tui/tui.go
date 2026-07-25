@@ -184,7 +184,8 @@ type doneMsg struct {
 
 func newModel(repo *git.Repo, offline, refresh bool) model {
 	var buf strings.Builder
-	eng := &stack.Engine{Repo: repo, Out: &buf, Quiet: false}
+	// Quiet: non-interactive rebases; on conflict git-stack aborts to leave tree clean.
+	eng := &stack.Engine{Repo: repo, Out: &buf, Quiet: true}
 	return model{
 		repo:    repo,
 		eng:     eng,
@@ -274,10 +275,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.errMsg = strings.TrimRight(msg.err.Error(), "\n")
 			m.errScroll = 0
-			m.showError = true
 			m.lastMsg = firstLine(m.errMsg)
 			m.lastIsErr = true
 			m.status = ""
+			// Full-screen overlay only for multi-line playbooks; short errors stay red under help.
+			m.showError = strings.Contains(m.errMsg, "\n")
 		} else {
 			m.errMsg = ""
 			m.errScroll = 0

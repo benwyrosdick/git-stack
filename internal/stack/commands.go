@@ -111,7 +111,8 @@ func (e *Engine) Pull(branch string) error {
 		return nil
 	case git.RelDiverged:
 		if err := e.Repo.RebaseOntoOrigin(branch); err != nil {
-			return fmt.Errorf("%w\n\nResolve conflicts, then: git rebase --continue\nOr abort: git rebase --abort", err)
+			_ = e.Repo.RebaseAbort()
+			return fmt.Errorf("pull rebase failed for %s (aborted; working tree clean)", branch)
 		}
 		short, _ := e.Repo.ShortSHA("refs/heads/" + branch)
 		e.info("pulled (rebase) %s onto origin/%s (%s)", branch, branch, short)
