@@ -107,6 +107,13 @@ func padRow(content string, width int, bg *lipgloss.Color) string {
 	return content
 }
 
+func conflictModeLabel(resolve bool) string {
+	if resolve {
+		return styleOn(nil, colYellow, true).Render("resolve")
+	}
+	return styleOn(nil, colGreen, true).Render("rollback")
+}
+
 // helpKeys colors key chords in a help string.
 // Pass pairs: key, description, key, description, ...
 func helpKeys(pairs ...string) string {
@@ -140,27 +147,29 @@ func Run(repo *git.Repo, offline, refresh bool) error {
 }
 
 type model struct {
-	repo         *git.Repo
-	eng          *stack.Engine
-	offline      bool
-	refresh      bool // force PR parent map refresh on next reload
-	infos        []stack.BranchInfo
-	cursor       int
-	current      string
-	status       string // busy / last action text
-	lastMsg      string // single status line under help
-	lastIsErr    bool
-	errMsg       string
-	errScroll    int // first visible line in error overlay
-	showHelp     bool
-	showError    bool // full-screen multiline error overlay
-	width        int
-	height       int
-	busy         bool
-	input        inputMode
-	prompt       string
-	inputBuf     string
-	confirmForce bool // force-delete when input == inputConfirm
+	repo    *git.Repo
+	eng     *stack.Engine
+	offline bool
+	refresh bool // force PR parent map refresh on next reload
+	// conflictResolve: false = rollback (abort on fail), true = leave rebase for manual fix
+	conflictResolve bool
+	infos           []stack.BranchInfo
+	cursor          int
+	current         string
+	status          string // busy / last action text
+	lastMsg         string // single status line under help
+	lastIsErr       bool
+	errMsg          string
+	errScroll       int // first visible line in error overlay
+	showHelp        bool
+	showError       bool // full-screen multiline error overlay
+	width           int
+	height          int
+	busy            bool
+	input           inputMode
+	prompt          string
+	inputBuf        string
+	confirmForce    bool // force-delete when input == inputConfirm
 }
 
 type inputMode int
@@ -184,13 +193,19 @@ type doneMsg struct {
 
 func newModel(repo *git.Repo, offline, refresh bool) model {
 	var buf strings.Builder
-	// Quiet: non-interactive rebases; on conflict git-stack aborts to leave tree clean.
-	eng := &stack.Engine{Repo: repo, Out: &buf, Quiet: true}
+	// Quiet: non-interactive rebases in TUI. ConflictMode defaults to rollback.
+	eng := &stack.Engine{
+		Repo:         repo,
+		Out:          &buf,
+		Quiet:        true,
+		ConflictMode: stack.ConflictRollback,
+	}
 	return model{
-		repo:    repo,
-		eng:     eng,
-		offline: offline,
-		refresh: refresh,
+		repo:            repo,
+		eng:             eng,
+		offline:         offline,
+		refresh:         refresh,
+		conflictResolve: false,
 	}
 }
 
@@ -462,6 +477,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return doneMsg{msg: "checked out " + b}
 		}
+	case "C":
+		m.conflictResolve = !m.conflictResolve
+		if m.conflictResolve {
+			m.eng.ConflictMode = stack.ConflictResolve
+			m.lastMsg = "conflicts: resolve (leave rebase in progress on failure)"
+		} else {
+			m.eng.ConflictMode = stack.ConflictRollback
+			m.lastMsg = "conflicts: rollback (abort rebase on failure)"
+		}
+		m.lastIsErr = false
+		return m, nil
 	case "r":
 		return m.runRestack(false)
 	case "R":
@@ -680,7 +706,8 @@ func (m model) View() string {
 	if n := len(m.infos); n > 0 {
 		count = dimStyle.Render(fmt.Sprintf("  %d branches", n))
 	}
-	header := titleStyle.Render("git-stack") + dimStyle.Render("  stacks") + count
+	mode := dimStyle.Render("  conflict:") + " " + conflictModeLabel(m.conflictResolve)
+	header := titleStyle.Render("git-stack") + dimStyle.Render("  stacks") + count + mode
 	b.WriteString(header + "\n")
 
 	var cols colLayout
@@ -722,6 +749,7 @@ func (m model) View() string {
 		"d/D", "delete",
 		"f/F", "fetch/pull",
 		"y/Y", "copy name/sha",
+		"C", "conflicts",
 		"?", "help",
 		"q", "quit",
 	) + "\n")

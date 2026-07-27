@@ -11,12 +11,25 @@ import (
 	"github.com/benwyrosdick/git-stack/internal/git"
 )
 
+// ConflictMode controls rebase failure handling.
+type ConflictMode int
+
+const (
+	// ConflictRollback aborts a failed rebase and leaves the worktree clean.
+	ConflictRollback ConflictMode = iota
+	// ConflictResolve leaves the rebase in progress so conflicts can be fixed.
+	ConflictResolve
+)
+
 // Engine runs stack operations against a git repo.
 type Engine struct {
 	Repo   *git.Repo
 	Out    io.Writer // info messages (stderr-like); defaults to os.Stderr
 	Quiet  bool      // suppress interactive rebase attach (use quiet rebase)
 	NoPush bool      // ignored; push is per-call
+
+	// ConflictMode is rollback (default) or resolve. See ConflictMode.
+	ConflictMode ConflictMode
 
 	// prParents is head → base from open PRs (bulk-loaded via LoadParents).
 	prParents map[string]string
@@ -33,6 +46,11 @@ func (e *Engine) info(format string, args ...any) {
 	fmt.Fprintf(w, "stack: "+format+"\n", args...)
 }
 
+// AbortOnConflict is true when failed rebases should be aborted (rollback mode).
+func (e *Engine) AbortOnConflict() bool {
+	return e.ConflictMode != ConflictResolve
+}
+
 func (e *Engine) rebaseOnto(onto, upstream, branch string) error {
 	var err error
 	if e.Quiet {
@@ -41,11 +59,19 @@ func (e *Engine) rebaseOnto(onto, upstream, branch string) error {
 		err = e.Repo.RebaseOnto(onto, upstream, branch)
 	}
 	if err != nil {
-		// RebaseOnto* already aborts; ensure clean even if that path was partial.
+		return e.finishRebaseFailure(branch, err)
+	}
+	return nil
+}
+
+// finishRebaseFailure aborts or leaves the in-progress rebase per ConflictMode.
+func (e *Engine) finishRebaseFailure(branch string, cause error) error {
+	if e.AbortOnConflict() {
 		_ = e.Repo.RebaseAbort()
 		return fmt.Errorf("rebase failed for %s (aborted; working tree clean)", branch)
 	}
-	return nil
+	// Leave conflicts for the user.
+	return fmt.Errorf("rebase failed for %s (left in progress — fix conflicts, then git rebase --continue or git rebase --abort)", branch)
 }
 
 // SlashRefConflict returns an existing ancestor path segment if name uses /
@@ -157,7 +183,7 @@ func (e *Engine) RestackBranch(branch, parent, parentRefOverride string) error {
 	}
 	e.info("restacking %s onto %s (replay %d commit(s) after %s)", branch, parent, n, short)
 	if err := e.rebaseOnto(parentRef, upstream, branch); err != nil {
-		return fmt.Errorf("restack failed: %s onto %s (rebase aborted; working tree clean)", branch, parent)
+		return err
 	}
 	e.info("restacked %s onto %s", branch, parent)
 	return nil

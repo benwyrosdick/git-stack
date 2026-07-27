@@ -94,6 +94,7 @@ Trunk is never absorbed unless `--onto-trunk`.
 | `F` | Pull selected (fetch; ff if behind, rebase if diverged) |
 | `y` | Copy branch name to clipboard |
 | `Y` | Copy commit SHA to clipboard |
+| `C` | Toggle conflict mode: **rollback** (abort) ↔ **resolve** (leave conflicts) |
 | `ctrl+r` | Refresh list + PR parents |
 | `?` | Help |
 | `q` | Quit |

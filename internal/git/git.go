@@ -347,20 +347,14 @@ func (r *Repo) FFBranch(branch string) error {
 
 // RebaseOntoOrigin rebases branch onto origin/<branch> (pull --rebase).
 // When branch is not HEAD, git checks it out first.
-// On failure, aborts the rebase so the worktree is left clean.
+// Caller decides whether to abort on failure (see stack.Engine.AbortOnConflict).
 func (r *Repo) RebaseOntoOrigin(branch string) error {
 	upstream := "refs/remotes/origin/" + branch
-	var err error
-	cur, cerr := r.CurrentBranch()
-	if cerr == nil && cur == branch {
-		err = r.runOK("rebase", upstream)
-	} else {
-		err = r.runOK("rebase", upstream, branch)
+	cur, err := r.CurrentBranch()
+	if err == nil && cur == branch {
+		return r.runOK("rebase", upstream)
 	}
-	if err != nil {
-		_ = r.RebaseAbort()
-	}
-	return err
+	return r.runOK("rebase", upstream, branch)
 }
 
 // SwitchCreate creates and checks out a new branch from startRef.
@@ -383,24 +377,16 @@ func (r *Repo) ForceDeleteBranch(name string) error {
 	return r.runOK("branch", "-D", name)
 }
 
-// RebaseOnto runs: git rebase --onto onto upstream branch
-// On failure, aborts the rebase so the worktree is left clean.
+// RebaseOnto runs: git rebase --onto onto upstream branch.
+// Caller decides whether to abort on failure (see stack.Engine.AbortOnConflict).
 func (r *Repo) RebaseOnto(onto, upstream, branch string) error {
-	err := r.RunInteractive("rebase", "--onto", onto, upstream, branch)
-	if err != nil {
-		_ = r.RebaseAbort()
-	}
-	return err
+	return r.RunInteractive("rebase", "--onto", onto, upstream, branch)
 }
 
 // RebaseOntoQuiet runs rebase without attaching to terminal (for tests / TUI).
-// On failure, aborts the rebase so the worktree is left clean.
+// Caller decides whether to abort on failure (see stack.Engine.AbortOnConflict).
 func (r *Repo) RebaseOntoQuiet(onto, upstream, branch string) error {
-	err := r.runOK("rebase", "--onto", onto, upstream, branch)
-	if err != nil {
-		_ = r.RebaseAbort()
-	}
-	return err
+	return r.runOK("rebase", "--onto", onto, upstream, branch)
 }
 
 // PushForceWithLease pushes branch with --force-with-lease.
