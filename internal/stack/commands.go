@@ -66,9 +66,9 @@ func (e *Engine) DeleteLocal(opts DeleteOpts) error {
 	return nil
 }
 
-// Pull fetches origin and updates the local branch from origin/<branch>.
-// Purely behind → fast-forward only; diverged → rebase onto origin.
-// In-sync is a no-op; ahead errors (push instead).
+// Pull runs `git pull` on branch (checks it out first if needed).
+// Uses the branch's configured upstream and the user's pull.* settings —
+// same as running git pull in the terminal. No custom ff/rebase logic.
 func (e *Engine) Pull(branch string) error {
 	if branch == "" {
 		var err error
@@ -83,42 +83,35 @@ func (e *Engine) Pull(branch string) error {
 	if err := e.Repo.RequireNoRebase(); err != nil {
 		return err
 	}
-	// FF/rebase (and checkout of a non-current branch) need a clean worktree.
-	if err := e.Repo.RequireClean(); err != nil {
-		return err
-	}
 
-	if err := e.FetchIfNeeded(false); err != nil {
-		return err
-	}
-	if !e.Repo.OriginBranchExists(branch) {
-		return fmt.Errorf("no origin/%s to pull from (push the branch first or check the name)", branch)
-	}
-
-	rel := e.Repo.RemoteRelationOf(branch)
-	switch rel {
-	case git.RelInSync:
-		e.info("%s already in-sync with origin", branch)
-		return nil
-	case git.RelAhead:
-		return fmt.Errorf("%s is ahead of origin (nothing to pull; push if you want to publish)", branch)
-	case git.RelBehind:
-		if err := e.Repo.FFBranch(branch); err != nil {
+	cur, err := e.Repo.CurrentBranch()
+	if err != nil || cur != branch {
+		e.info("switching to %s", branch)
+		if err := e.Repo.Switch(branch); err != nil {
 			return err
 		}
-		short, _ := e.Repo.ShortSHA("refs/heads/" + branch)
-		e.info("pulled (ff) %s → origin/%s (%s)", branch, branch, short)
-		return nil
-	case git.RelDiverged:
-		if err := e.Repo.RebaseOntoOrigin(branch); err != nil {
+	}
+
+	e.info("git pull (%s)", branch)
+	out, err := e.Repo.Pull()
+	if err != nil {
+		if e.Repo.InRebase() {
 			return e.finishRebaseFailure(branch, err)
 		}
-		short, _ := e.Repo.ShortSHA("refs/heads/" + branch)
-		e.info("pulled (rebase) %s onto origin/%s (%s)", branch, branch, short)
-		return nil
-	default:
-		return fmt.Errorf("cannot pull %s (remote relation: %s)", branch, rel)
+		return err
 	}
+	if out != "" {
+		// Surface git's own summary (e.g. "Already up to date.", ff stats).
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				e.info("%s", line)
+			}
+		}
+	}
+	short, _ := e.Repo.ShortSHA("HEAD")
+	e.info("pulled %s (%s)", branch, short)
+	return nil
 }
 
 // Parent prints inferred parent of branch (default: current).

@@ -91,7 +91,7 @@ Trunk is never absorbed unless `--onto-trunk`.
 | `P` | Open/retarget PR |
 | `c` | Create child (suffix prompt) |
 | `f` | Fetch origin |
-| `F` | Pull selected (fetch; ff if behind, rebase if diverged) |
+| `F` | Pull selected (`git pull` on that branch; same as terminal) |
 | `y` | Copy branch name to clipboard |
 | `Y` | Copy commit SHA to clipboard |
 | `C` | Toggle conflict mode: **rollback** (abort) ↔ **resolve** (leave conflicts) |

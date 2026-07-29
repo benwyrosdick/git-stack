@@ -357,6 +357,35 @@ func (r *Repo) RebaseOntoOrigin(branch string) error {
 	return r.runOK("rebase", upstream, branch)
 }
 
+// Pull runs `git pull` with no extra flags so configured upstream and
+// pull.rebase / pull.ff settings match a terminal pull.
+// Returns combined stdout/stderr on success (may be empty).
+func (r *Repo) Pull() (string, error) {
+	cmd := r.git("pull")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	out := strings.TrimSpace(stdout.String())
+	errOut := strings.TrimSpace(stderr.String())
+	combined := out
+	if errOut != "" {
+		if combined != "" {
+			combined += "\n" + errOut
+		} else {
+			combined = errOut
+		}
+	}
+	if err != nil {
+		msg := combined
+		if msg == "" {
+			msg = err.Error()
+		}
+		return combined, fmt.Errorf("git pull: %s", msg)
+	}
+	return combined, nil
+}
+
 // SwitchCreate creates and checks out a new branch from startRef.
 func (r *Repo) SwitchCreate(name, startRef string) error {
 	return r.runOK("switch", "-c", name, startRef)
