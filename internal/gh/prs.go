@@ -24,7 +24,16 @@ const CacheTTL = 5 * time.Minute
 
 type prCacheFile struct {
 	FetchedAt time.Time         `json:"fetched_at"`
-	Parents   map[string]string `json:"parents"` // head → base
+	Parents   map[string]string `json:"parents"`           // head → base
+	Numbers   map[string]int    `json:"numbers,omitempty"` // head → PR number
+	URLs      map[string]string `json:"urls,omitempty"`    // head → PR url
+}
+
+// PRCache is the on-disk / in-memory open-PR snapshot.
+type PRCache struct {
+	Parents map[string]string
+	Numbers map[string]int
+	URLs    map[string]string
 }
 
 // ListOpenPRParents returns headRefName → baseRefName for open PRs (one gh call).
@@ -88,33 +97,93 @@ func CachePath(gitDir string) string {
 	return filepath.Join(gitDir, "git-stack", "pr-parents.json")
 }
 
-// LoadPRParentCache reads the on-disk cache. ok is false if missing/stale/invalid.
-func LoadPRParentCache(gitDir string, maxAge time.Duration) (map[string]string, bool) {
+// LoadPRCache reads the on-disk PR cache. ok is false if missing/stale/invalid.
+func LoadPRCache(gitDir string, maxAge time.Duration) (PRCache, bool) {
 	path := CachePath(gitDir)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false
+		return PRCache{}, false
 	}
 	var c prCacheFile
 	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, false
+		return PRCache{}, false
 	}
 	if c.Parents == nil {
-		return nil, false
+		return PRCache{}, false
 	}
 	if maxAge > 0 && time.Since(c.FetchedAt) > maxAge {
+		return PRCache{}, false
+	}
+	if c.Numbers == nil {
+		c.Numbers = map[string]int{}
+	}
+	if c.URLs == nil {
+		c.URLs = map[string]string{}
+	}
+	return PRCache{Parents: c.Parents, Numbers: c.Numbers, URLs: c.URLs}, true
+}
+
+// LoadPRParentCache reads parents only (compat helper).
+func LoadPRParentCache(gitDir string, maxAge time.Duration) (map[string]string, bool) {
+	c, ok := LoadPRCache(gitDir, maxAge)
+	if !ok {
 		return nil, false
 	}
 	return c.Parents, true
 }
 
-// SavePRParentCache writes the parent map under .git/git-stack/.
-func SavePRParentCache(gitDir string, parents map[string]string) error {
+// SavePRCache writes full open-PR snapshot under .git/git-stack/.
+func SavePRCache(gitDir string, infos map[string]PRInfo) error {
 	dir := filepath.Join(gitDir, "git-stack")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	c := prCacheFile{FetchedAt: time.Now().UTC(), Parents: parents}
+	parents := make(map[string]string, len(infos))
+	numbers := make(map[string]int, len(infos))
+	urls := make(map[string]string, len(infos))
+	for head, info := range infos {
+		if info.Base != "" {
+			parents[head] = info.Base
+		}
+		if info.Number > 0 {
+			numbers[head] = info.Number
+		}
+		if info.URL != "" {
+			urls[head] = info.URL
+		}
+	}
+	c := prCacheFile{
+		FetchedAt: time.Now().UTC(),
+		Parents:   parents,
+		Numbers:   numbers,
+		URLs:      urls,
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(CachePath(gitDir), data, 0o644)
+}
+
+// SavePRParentCache writes parents only, preserving numbers/urls when present.
+func SavePRParentCache(gitDir string, parents map[string]string) error {
+	existing, _ := LoadPRCache(gitDir, 0)
+	dir := filepath.Join(gitDir, "git-stack")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	c := prCacheFile{
+		FetchedAt: time.Now().UTC(),
+		Parents:   parents,
+		Numbers:   existing.Numbers,
+		URLs:      existing.URLs,
+	}
+	if c.Numbers == nil {
+		c.Numbers = map[string]int{}
+	}
+	if c.URLs == nil {
+		c.URLs = map[string]string{}
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err

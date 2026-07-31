@@ -29,11 +29,22 @@ func (e *Engine) LoadParents(opts LoadParentsOpts) error {
 	if e.prParents == nil {
 		e.prParents = map[string]string{}
 	}
+	if e.prNumbers == nil {
+		e.prNumbers = map[string]int{}
+	}
+	applyCache := func(c gh.PRCache) {
+		e.prParents = c.Parents
+		if c.Numbers != nil {
+			e.prNumbers = c.Numbers
+		} else {
+			e.prNumbers = map[string]int{}
+		}
+	}
 	if opts.Offline {
 		// Prefer disk cache if present (even if stale) for offline.
 		if gd, err := e.Repo.GitDir(); err == nil {
-			if m, ok := gh.LoadPRParentCache(gd, 0); ok {
-				e.prParents = m
+			if c, ok := gh.LoadPRCache(gd, 0); ok {
+				applyCache(c)
 			}
 		}
 		return nil
@@ -46,35 +57,53 @@ func (e *Engine) LoadParents(opts LoadParentsOpts) error {
 		return nil
 	}
 	if !opts.Refresh {
-		if m, ok := gh.LoadPRParentCache(gd, gh.CacheTTL); ok {
-			e.prParents = m
+		if c, ok := gh.LoadPRCache(gd, gh.CacheTTL); ok {
+			applyCache(c)
 			return nil
 		}
 	}
-	c := &gh.Client{Dir: e.Repo.Dir}
-	m, err := c.ListOpenPRParents()
+	client := &gh.Client{Dir: e.Repo.Dir}
+	infos, err := client.ListOpenPRs()
 	if err != nil {
 		// Fall back to stale cache
-		if cached, ok := gh.LoadPRParentCache(gd, 0); ok {
-			e.prParents = cached
+		if c, ok := gh.LoadPRCache(gd, 0); ok {
+			applyCache(c)
 			e.info("could not refresh PR parents (%v); using cache", err)
 			return nil
 		}
 		e.info("could not load PR parents: %v", err)
 		return nil // non-fatal; local/dots still work
 	}
-	e.prParents = m
-	_ = gh.SavePRParentCache(gd, m)
+	e.prParents = map[string]string{}
+	e.prNumbers = map[string]int{}
+	for head, info := range infos {
+		if info.Base != "" {
+			e.prParents[head] = info.Base
+		}
+		if info.Number > 0 {
+			e.prNumbers[head] = info.Number
+		}
+	}
+	_ = gh.SavePRCache(gd, infos)
 	return nil
 }
 
 // InvalidateParentCache drops in-memory and on-disk PR parent cache.
 func (e *Engine) InvalidateParentCache() {
 	e.prParents = nil
+	e.prNumbers = nil
 	e.invalidateIndex()
 	if gd, err := e.Repo.GitDir(); err == nil {
 		gh.InvalidatePRParentCache(gd)
 	}
+}
+
+// PRNumber returns the open PR number for branch, or 0 if unknown.
+func (e *Engine) PRNumber(branch string) int {
+	if e.prNumbers == nil {
+		return 0
+	}
+	return e.prNumbers[branch]
 }
 
 // ParentOf resolves stack parent:

@@ -675,8 +675,18 @@ type BranchInfo struct {
 	Status     BranchStatus
 	Depth      int
 	Remote     git.RemoteRelation
+	// PRNumber is the open PR for this branch head, or 0 if none/unknown.
+	PRNumber int
 	// TreePrefix is ASCII connectors, e.g. "│   ├─ " (set by OrderAsTree).
 	TreePrefix string
+}
+
+// PRLabel formats a PR number for display ("#123" or "—").
+func PRLabel(n int) string {
+	if n <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("#%d", n)
 }
 
 // List returns stack tree info under root (or all stacks if root empty).
@@ -802,6 +812,7 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 			Status:     status,
 			Depth:      depth,
 			Remote:     rel,
+			PRNumber:   e.PRNumber(b),
 		})
 	}
 	return OrderAsTree(infos), nil
@@ -843,7 +854,7 @@ func FormatList(root string, infos []BranchInfo) string {
 		infos = OrderAsTree(infos)
 	}
 	// Use display width (runes), not bytes — tree glyphs are multi-byte UTF-8.
-	branchW, shaW, ownW, statusW, remoteW := 8, 7, 3, dispWidth("[needs-restack]"), dispWidth("diverged")
+	branchW, shaW, ownW, statusW, remoteW, prW := 8, 7, 3, dispWidth("[needs-restack]"), dispWidth("diverged"), dispWidth("PR")
 	for _, info := range infos {
 		if n := dispWidth(info.TreePrefix) + dispWidth(info.Name); n > branchW {
 			branchW = n
@@ -860,6 +871,9 @@ func FormatList(root string, infos []BranchInfo) string {
 		if n := dispWidth(string(info.Remote)); n > remoteW {
 			remoteW = n
 		}
+		if n := dispWidth(PRLabel(info.PRNumber)); n > prW {
+			prW = n
+		}
 	}
 	var b strings.Builder
 	for _, info := range infos {
@@ -868,8 +882,9 @@ func FormatList(root string, infos []BranchInfo) string {
 		own := padDisplay("+"+info.OwnCommits, ownW)
 		st := padDisplay("["+string(info.Status)+"]", statusW)
 		rel := padDisplay(string(info.Remote), remoteW)
-		fmt.Fprintf(&b, "%s  %s  %s  %s  %s  base:%s\n",
-			branch, sha, own, st, rel, info.Parent)
+		pr := padDisplay(PRLabel(info.PRNumber), prW)
+		fmt.Fprintf(&b, "%s  %s  %s  %s  %s  %s  base:%s\n",
+			branch, sha, own, st, rel, pr, info.Parent)
 	}
 	return b.String()
 }

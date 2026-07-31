@@ -33,6 +33,8 @@ type Engine struct {
 
 	// prParents is head → base from open PRs (bulk-loaded via LoadParents).
 	prParents map[string]string
+	// prNumbers is head → PR number from open PRs (same source as prParents).
+	prNumbers map[string]int
 
 	// idx is a bulk-loaded memo for fast List / ParentOf (see index.go).
 	idx *repoIndex

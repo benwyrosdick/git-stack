@@ -777,13 +777,14 @@ type colLayout struct {
 	own    int
 	status int
 	remote int
+	pr     int
 }
 
 // contentSepWidth is how wide header/footer rules should be: as wide as the
 // branch table (or header text), capped at the terminal width when known.
 func contentSepWidth(cols colLayout, header string, termW int) int {
-	// marker(2) + branch + gaps(2*4) + sha + own + status + remote + head mark(~3)
-	tableW := 2 + cols.branch + 2 + cols.sha + 2 + cols.own + 2 + cols.status + 2 + cols.remote + 3
+	// marker(2) + branch + gaps + sha + own + status + remote + pr + head mark
+	tableW := 2 + cols.branch + 2 + cols.sha + 2 + cols.own + 2 + cols.status + 2 + cols.remote + 2 + cols.pr + 3
 	w := tableW
 	if hw := lipgloss.Width(header); hw > w {
 		w = hw
@@ -805,6 +806,7 @@ func columnLayout(infos []stack.BranchInfo) colLayout {
 		own:    lipgloss.Width("COMMITS"),
 		status: lipgloss.Width("STATUS"),
 		remote: lipgloss.Width("REMOTE"),
+		pr:     lipgloss.Width("PR"),
 	}
 	// Prefer status/remote mins that fit real values too.
 	if n := lipgloss.Width("[needs-restack]"); n > cols.status {
@@ -831,6 +833,9 @@ func columnLayout(infos []stack.BranchInfo) colLayout {
 		if n := lipgloss.Width(string(info.Remote)); n > cols.remote {
 			cols.remote = n
 		}
+		if n := lipgloss.Width(stack.PRLabel(info.PRNumber)); n > cols.pr {
+			cols.pr = n
+		}
 	}
 	return cols
 }
@@ -851,7 +856,8 @@ func renderColHeaders(cols colLayout) string {
 		pad("SHA", cols.sha) + gap +
 		pad("COMMITS", cols.own) + gap +
 		pad("STATUS", cols.status) + gap +
-		pad("REMOTE", cols.remote)
+		pad("REMOTE", cols.remote) + gap +
+		pad("PR", cols.pr)
 	return dimStyle.Render(line)
 }
 
@@ -913,13 +919,20 @@ func (m model) renderRow(i int, info stack.BranchInfo, cols colLayout) string {
 	own := padVisual(styleOn(bg, colMuted, false).Render("+"+info.OwnCommits), cols.own, bg)
 	st := padVisual(statusStyled(info.Status, bg), cols.status, bg)
 	rel := padVisual(remoteStyled(info.Remote, bg), cols.remote, bg)
+	prLabel := stack.PRLabel(info.PRNumber)
+	var pr string
+	if info.PRNumber > 0 {
+		pr = padVisual(styleOn(bg, colTitle, false).Render(prLabel), cols.pr, bg)
+	} else {
+		pr = padVisual(styleOn(bg, colDim, false).Render(prLabel), cols.pr, bg)
+	}
 
 	head := ""
 	if isHead {
 		head = styleOn(bg, colAccent, true).Render("  ●")
 	}
 
-	line := marker + branchCol + gap + sha + gap + own + gap + st + gap + rel + head
+	line := marker + branchCol + gap + sha + gap + own + gap + st + gap + rel + gap + pr + head
 	if selected {
 		line = padRow(line, m.width, bg)
 	}
