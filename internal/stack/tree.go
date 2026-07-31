@@ -1,9 +1,16 @@
 package stack
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // OrderAsTree reorders infos into DFS tree order and sets TreePrefix
 // (├─ └─ │) based on parent relationships among the listed branches.
+//
+// Each branch name appears at most once. If infos contains duplicates
+// (same Name), the entry with the higher PRNumber wins; ties keep the
+// later entry. Parent/children edges are also de-duplicated.
 func OrderAsTree(infos []BranchInfo) []BranchInfo {
 	if len(infos) == 0 {
 		return infos
@@ -11,19 +18,54 @@ func OrderAsTree(infos []BranchInfo) []BranchInfo {
 	byName := make(map[string]BranchInfo, len(infos))
 	inList := make(map[string]bool, len(infos))
 	for _, info := range infos {
-		byName[info.Name] = info
-		inList[info.Name] = true
+		name := normalizeBranchName(info.Name)
+		if name == "" {
+			continue
+		}
+		info.Name = name
+		if info.Parent != "" && info.Parent != "—" {
+			info.Parent = normalizeBranchName(info.Parent)
+		}
+		if prev, ok := byName[name]; ok {
+			// Prefer the row that knows about an open PR.
+			if info.PRNumber <= prev.PRNumber {
+				continue
+			}
+		}
+		byName[name] = info
+		inList[name] = true
 	}
 
 	children := make(map[string][]string)
+	childSeen := make(map[string]map[string]bool) // parent → set of kids
 	var roots []string
-	for _, info := range infos {
+	rootSeen := make(map[string]bool)
+
+	// Iterate unique names in sorted order for deterministic edges.
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		info := byName[name]
 		p := info.Parent
 		if p == "" || p == "—" || !inList[p] {
-			roots = append(roots, info.Name)
+			if !rootSeen[name] {
+				rootSeen[name] = true
+				roots = append(roots, name)
+			}
 			continue
 		}
-		children[p] = append(children[p], info.Name)
+		if childSeen[p] == nil {
+			childSeen[p] = map[string]bool{}
+		}
+		if childSeen[p][name] {
+			continue
+		}
+		childSeen[p][name] = true
+		children[p] = append(children[p], name)
 	}
 	for p := range children {
 		sort.Strings(children[p])
@@ -38,7 +80,7 @@ func OrderAsTree(infos []BranchInfo) []BranchInfo {
 	})
 
 	var out []BranchInfo
-	seen := make(map[string]bool, len(infos))
+	seen := make(map[string]bool, len(byName))
 
 	var walk func(name, prefix string, isRoot, isLast bool)
 	walk = func(name, prefix string, isRoot, isLast bool) {
@@ -76,12 +118,19 @@ func OrderAsTree(infos []BranchInfo) []BranchInfo {
 	for i, r := range roots {
 		walk(r, "", true, i == len(roots)-1)
 	}
-	// Orphans already marked roots; any missed (cycles) append plain
-	for _, info := range infos {
-		if !seen[info.Name] {
+	// Any missed (cycles) append plain, still unique.
+	for _, name := range names {
+		if !seen[name] {
+			info := byName[name]
 			info.TreePrefix = ""
 			out = append(out, info)
+			seen[name] = true
 		}
 	}
 	return out
+}
+
+// normalizeBranchName trims whitespace from ref short names.
+func normalizeBranchName(s string) string {
+	return strings.TrimSpace(s)
 }

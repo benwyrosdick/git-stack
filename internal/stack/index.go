@@ -52,9 +52,14 @@ func (e *Engine) ensureIndex() error {
 	if err != nil {
 		return err
 	}
-	idx.localTips = localTips
+	idx.localTips = make(map[string]string, len(localTips))
 	idx.locals = make([]string, 0, len(localTips))
-	for name := range localTips {
+	for name, sha := range localTips {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		idx.localTips[name] = sha
 		idx.locals = append(idx.locals, name)
 	}
 
@@ -64,7 +69,7 @@ func (e *Engine) ensureIndex() error {
 			if name == "origin" || name == "origin/HEAD" {
 				continue
 			}
-			b := strings.TrimPrefix(name, "origin/")
+			b := strings.TrimSpace(strings.TrimPrefix(name, "origin/"))
 			if b == "" || b == "HEAD" {
 				continue
 			}
@@ -74,7 +79,14 @@ func (e *Engine) ensureIndex() error {
 
 	// Stack parent config — 1 git call.
 	if cfg, err := e.Repo.ListStackParentConfig(); err == nil {
-		idx.configParent = cfg
+		for branch, parent := range cfg {
+			b := strings.TrimSpace(branch)
+			p := strings.TrimSpace(parent)
+			if b == "" || p == "" {
+				continue
+			}
+			idx.configParent[b] = p
+		}
 	}
 
 	e.idx = idx

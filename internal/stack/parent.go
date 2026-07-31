@@ -77,8 +77,13 @@ func (e *Engine) LoadParents(opts LoadParentsOpts) error {
 	e.prParents = map[string]string{}
 	e.prNumbers = map[string]int{}
 	for head, info := range infos {
-		if info.Base != "" {
-			e.prParents[head] = info.Base
+		head = strings.TrimSpace(head)
+		base := strings.TrimSpace(info.Base)
+		if head == "" {
+			continue
+		}
+		if base != "" {
+			e.prParents[head] = base
 		}
 		if info.Number > 0 {
 			e.prNumbers[head] = info.Number

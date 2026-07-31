@@ -78,12 +78,19 @@ func (c *Client) ListOpenPRs() (map[string]PRInfo, error) {
 	}
 	m := make(map[string]PRInfo, len(rows))
 	for _, r := range rows {
-		if r.HeadRefName == "" || r.BaseRefName == "" {
+		head := strings.TrimSpace(r.HeadRefName)
+		base := strings.TrimSpace(r.BaseRefName)
+		if head == "" || base == "" {
 			continue
 		}
-		m[r.HeadRefName] = PRInfo{
-			Head:   r.HeadRefName,
-			Base:   r.BaseRefName,
+		// If GitHub returns multiple open PRs for the same head, keep the
+		// highest number (newest) so the UI never keys two rows on one branch.
+		if prev, ok := m[head]; ok && prev.Number >= r.Number {
+			continue
+		}
+		m[head] = PRInfo{
+			Head:   head,
+			Base:   base,
 			Number: r.Number,
 			URL:    r.URL,
 			Draft:  r.IsDraft,

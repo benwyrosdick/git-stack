@@ -94,6 +94,7 @@ Trunk is never absorbed unless `--onto-trunk`.
 | `F` | Pull selected (`git pull` on that branch; same as terminal) |
 | `y` | Copy branch name to clipboard |
 | `Y` | Copy commit SHA to clipboard |
+| `v` | Open PR in browser (`gh pr view --web`) |
 | `C` | Toggle conflict mode: **rollback** (abort) ↔ **resolve** (leave conflicts) |
 | `ctrl+r` | Refresh list + PR parents |
 | `?` | Help |

@@ -197,7 +197,7 @@ func (r *Repo) ListRefTips(prefix string) (map[string]string, error) {
 		if i <= 0 {
 			continue
 		}
-		name, sha := line[:i], line[i+1:]
+		name, sha := strings.TrimSpace(line[:i]), strings.TrimSpace(line[i+1:])
 		if name == "" || sha == "" {
 			continue
 		}

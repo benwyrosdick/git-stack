@@ -249,6 +249,41 @@ func branchInInfos(infos []stack.BranchInfo, name string) bool {
 	return false
 }
 
+// dedupeBranchInfos keeps one row per branch name (higher PR number wins).
+func dedupeBranchInfos(infos []stack.BranchInfo) []stack.BranchInfo {
+	if len(infos) < 2 {
+		return infos
+	}
+	// First pass: pick winner per name (prefer higher PRNumber; later wins ties on equal PR).
+	best := make(map[string]stack.BranchInfo, len(infos))
+	order := make([]string, 0, len(infos))
+	for _, info := range infos {
+		name := strings.TrimSpace(info.Name)
+		if name == "" {
+			continue
+		}
+		info.Name = name
+		if prev, ok := best[name]; ok {
+			if info.PRNumber < prev.PRNumber {
+				continue
+			}
+			// Equal or higher PR: replace but keep first-seen order slot.
+			best[name] = info
+			continue
+		}
+		best[name] = info
+		order = append(order, name)
+	}
+	if len(best) == len(infos) {
+		return infos
+	}
+	out := make([]stack.BranchInfo, 0, len(order))
+	for _, name := range order {
+		out = append(out, best[name])
+	}
+	return out
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -267,7 +302,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= 0 && m.cursor < len(m.infos) {
 			prev = m.infos[m.cursor].Name
 		}
-		m.infos = msg.infos
+		// Defensive: never show the same branch twice (stale/race after PR create).
+		m.infos = dedupeBranchInfos(msg.infos)
 		m.current = msg.current
 		// Keep selection on the same branch after reload; else land on HEAD.
 		m.cursor = 0
@@ -305,6 +341,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.lastMsg = msg.msg
 			}
 		}
+		// After mutations (especially PR create), force a fresh PR map so the
+		// new PR number lands on the single existing row — not a stale reload.
+		m.refresh = true
 		return m, m.reload()
 
 	case tea.KeyMsg:
@@ -500,6 +539,28 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.promptDelete(false)
 	case "D":
 		return m.promptDelete(true)
+	case "v":
+		if len(m.infos) == 0 {
+			return m, nil
+		}
+		b := m.infos[m.cursor].Name
+		if m.eng.IsTrunk(b) {
+			m.lastMsg = "no PR for trunk"
+			m.lastIsErr = true
+			return m, nil
+		}
+		m.busy = true
+		m.status = "opening PR for " + b
+		return m, func() tea.Msg {
+			if err := gh.OpenPRWeb(m.repo, b); err != nil {
+				return doneMsg{err: err}
+			}
+			msg := "opened PR in browser"
+			if n := m.eng.PRNumber(b); n > 0 {
+				msg = fmt.Sprintf("opened #%d in browser", n)
+			}
+			return doneMsg{msg: msg}
+		}
 	case "y":
 		if len(m.infos) == 0 {
 			return m, nil
@@ -574,6 +635,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		b := m.infos[m.cursor].Name
 		m.busy = true
+		m.status = "creating/updating PR for " + b
 		return m, func() tea.Msg {
 			base := m.eng.ParentOf(b)
 			url, err := gh.EnsurePR(m.repo, gh.PROpts{
@@ -581,10 +643,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				Base:          base,
 				StackBranches: m.eng.PRStackBranches(b),
 			})
+			// Always drop PR cache so the next reload picks up the new number.
+			m.eng.InvalidateParentCache()
 			if err != nil {
 				return doneMsg{err: err}
 			}
-			m.eng.InvalidateParentCache()
 			msg := "PR ready"
 			if url != "" {
 				msg = url
@@ -749,6 +812,7 @@ func (m model) View() string {
 		"d/D", "delete",
 		"f/F", "fetch/pull",
 		"y/Y", "copy name/sha",
+		"v", "view PR",
 		"C", "conflicts",
 		"?", "help",
 		"q", "quit",
@@ -1070,10 +1134,17 @@ func helpView() string {
 	b.WriteString(helpLine("F", "pull selected (git pull; uses upstream + pull config)") + "\n")
 	b.WriteString(helpLine("y", "copy branch name to clipboard") + "\n")
 	b.WriteString(helpLine("Y", "copy full commit SHA to clipboard") + "\n")
+	b.WriteString(helpLine("v", "open PR in browser (gh pr view --web)") + "\n")
+	b.WriteString(helpLine("C", "toggle conflict mode: rollback ↔ resolve") + "\n")
 	b.WriteString(helpLine("ctrl+r", "refresh list") + "\n\n")
 	b.WriteString(section("Other"))
 	b.WriteString(helpLine("?", "toggle this help") + "\n")
 	b.WriteString(helpLine("q", "quit") + "\n\n")
+	b.WriteString(helpStyle.Render("  Conflicts: ") +
+		styleOn(nil, colGreen, true).Render("rollback") +
+		helpStyle.Render(" = abort failed rebase (clean tree) · ") +
+		styleOn(nil, colYellow, true).Render("resolve") +
+		helpStyle.Render(" = leave rebase for manual fix") + "\n")
 	b.WriteString(helpStyle.Render("  Stack: ") +
 		styleOn(nil, colGreen, false).Render("ok") + helpStyle.Render(" · ") +
 		styleOn(nil, colYellow, false).Render("needs-restack") + helpStyle.Render(" · ") +

@@ -758,6 +758,9 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 		list = append([]string{list[0]}, rest...)
 	}
 
+	// Final name-level dedupe (guards against duplicate locals / racey reloads).
+	list = uniqueBranchNames(list)
+
 	var infos []BranchInfo
 	for _, b := range list {
 		parent := e.ParentOf(b)
@@ -816,6 +819,24 @@ func (e *Engine) List(root string) ([]BranchInfo, error) {
 		})
 	}
 	return OrderAsTree(infos), nil
+}
+
+// uniqueBranchNames keeps first occurrence of each trimmed name.
+func uniqueBranchNames(list []string) []string {
+	if len(list) == 0 {
+		return list
+	}
+	seen := make(map[string]bool, len(list))
+	out := make([]string, 0, len(list))
+	for _, b := range list {
+		b = normalizeBranchName(b)
+		if b == "" || seen[b] {
+			continue
+		}
+		seen[b] = true
+		out = append(out, b)
+	}
+	return out
 }
 
 // inStackGraph reports whether branch participates in a stack (not only trunk).

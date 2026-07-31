@@ -97,15 +97,25 @@ func EnsurePR(repo *git.Repo, opts PROpts) (string, error) {
 		if opts.Draft {
 			args = append(args, "--draft")
 		}
+		// Capture output so callers inside a TUI (Bubble Tea alt screen) don't
+		// get a corrupted frame from gh writing into the live display.
 		cmd := exec.Command("gh", args...)
 		if repo.Dir != "" {
 			cmd.Dir = repo.Dir
 		}
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		// --fill is non-interactive; leave stdin nil.
 		if err := cmd.Run(); err != nil {
-			return "", err
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			return "", fmt.Errorf("gh pr create: %s", msg)
+		}
+		if out := strings.TrimSpace(stdout.String()); out != "" {
+			fmt.Fprintln(os.Stderr, out)
 		}
 	}
 
@@ -170,6 +180,23 @@ func HasPR(repo *git.Repo, branch string) bool {
 	c := &Client{Dir: repo.Dir}
 	_, err := c.run("pr", "view", branch, "--json", "number", "--jq", ".number")
 	return err == nil
+}
+
+// OpenPRWeb opens the PR for branch in the default browser via gh.
+func OpenPRWeb(repo *git.Repo, branch string) error {
+	if !Available() {
+		return fmt.Errorf("gh is required to open PRs")
+	}
+	if branch == "" {
+		return fmt.Errorf("branch required")
+	}
+	c := &Client{Dir: repo.Dir}
+	// Prefer --web; gh opens the browser and prints the URL.
+	_, err := c.run("pr", "view", branch, "--web")
+	if err != nil {
+		return fmt.Errorf("no PR for %s (or gh failed): %w", branch, err)
+	}
+	return nil
 }
 
 // RetargetBase sets PR base if a PR exists for branch.
