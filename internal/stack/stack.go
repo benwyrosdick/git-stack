@@ -53,17 +53,48 @@ func (e *Engine) AbortOnConflict() bool {
 	return e.ConflictMode != ConflictResolve
 }
 
+// runPreservingCheckout runs fn, then returns HEAD to the branch that was
+// checked out when the call started (if we moved away and are not mid-rebase).
+// Stack ops must not leave the user on a different branch after success.
+func (e *Engine) runPreservingCheckout(fn func() error) error {
+	cur, curErr := e.Repo.CurrentBranch()
+	fnErr := fn()
+	if curErr != nil {
+		return fnErr
+	}
+	// Leave conflicted rebases alone so the user can continue/abort in place.
+	if e.Repo.InRebase() {
+		return fnErr
+	}
+	now, nowErr := e.Repo.CurrentBranch()
+	if nowErr != nil || now == cur {
+		return fnErr
+	}
+	if !e.Repo.LocalBranchExists(cur) {
+		return fnErr
+	}
+	if switchErr := e.Repo.Switch(cur); switchErr != nil {
+		if fnErr != nil {
+			return fmt.Errorf("%w\n(also failed to return to %s: %v)", fnErr, cur, switchErr)
+		}
+		return fmt.Errorf("operation succeeded but failed to return to %s: %w", cur, switchErr)
+	}
+	return fnErr
+}
+
 func (e *Engine) rebaseOnto(onto, upstream, branch string) error {
-	var err error
-	if e.Quiet {
-		err = e.Repo.RebaseOntoQuiet(onto, upstream, branch)
-	} else {
-		err = e.Repo.RebaseOnto(onto, upstream, branch)
-	}
-	if err != nil {
-		return e.finishRebaseFailure(branch, err)
-	}
-	return nil
+	return e.runPreservingCheckout(func() error {
+		var err error
+		if e.Quiet {
+			err = e.Repo.RebaseOntoQuiet(onto, upstream, branch)
+		} else {
+			err = e.Repo.RebaseOnto(onto, upstream, branch)
+		}
+		if err != nil {
+			return e.finishRebaseFailure(branch, err)
+		}
+		return nil
+	})
 }
 
 // finishRebaseFailure aborts or leaves the in-progress rebase per ConflictMode.

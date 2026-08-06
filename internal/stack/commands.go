@@ -66,9 +66,13 @@ func (e *Engine) DeleteLocal(opts DeleteOpts) error {
 	return nil
 }
 
-// Pull runs `git pull` on branch (checks it out first if needed).
-// Uses the branch's configured upstream and the user's pull.* settings —
-// same as running git pull in the terminal. No custom ff/rebase logic.
+// Pull updates branch from its remote without changing the current checkout
+// when branch is not already HEAD.
+//
+// On the current branch: runs `git pull` so upstream + pull.* settings match
+// a terminal pull.
+// On another branch: fetch + fast-forward when possible; if diverged, rebases
+// (or merges via temporary checkout) and restores the previous branch.
 func (e *Engine) Pull(branch string) error {
 	if branch == "" {
 		var err error
@@ -84,14 +88,16 @@ func (e *Engine) Pull(branch string) error {
 		return err
 	}
 
-	cur, err := e.Repo.CurrentBranch()
-	if err != nil || cur != branch {
-		e.info("switching to %s", branch)
-		if err := e.Repo.Switch(branch); err != nil {
-			return err
-		}
+	cur, curErr := e.Repo.CurrentBranch()
+	onBranch := curErr == nil && cur == branch
+	if onBranch {
+		return e.pullCurrent(branch)
 	}
+	return e.pullOther(branch)
+}
 
+// pullCurrent runs a normal git pull on the checked-out branch.
+func (e *Engine) pullCurrent(branch string) error {
 	e.info("git pull (%s)", branch)
 	out, err := e.Repo.Pull()
 	if err != nil {
@@ -100,18 +106,101 @@ func (e *Engine) Pull(branch string) error {
 		}
 		return err
 	}
-	if out != "" {
-		// Surface git's own summary (e.g. "Already up to date.", ff stats).
-		for _, line := range strings.Split(out, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				e.info("%s", line)
-			}
-		}
-	}
+	e.surfacePullOutput(out)
 	short, _ := e.Repo.ShortSHA("HEAD")
 	e.info("pulled %s (%s)", branch, short)
 	return nil
+}
+
+// pullOther updates a non-checked-out branch without leaving the user there.
+func (e *Engine) pullOther(branch string) error {
+	if err := e.FetchIfNeeded(false); err != nil {
+		return err
+	}
+	if !e.Repo.OriginBranchExists(branch) {
+		return fmt.Errorf("no origin/%s to pull (push the branch or set an upstream first)", branch)
+	}
+
+	rel := e.Repo.RemoteRelationOf(branch)
+	switch rel {
+	case git.RelInSync, git.RelAhead:
+		e.info("Already up to date.")
+		short, _ := e.Repo.ShortSHA("refs/heads/" + branch)
+		e.info("pulled %s (%s)", branch, short)
+		return nil
+	case git.RelBehind:
+		e.info("fast-forward %s → origin/%s", branch, branch)
+		if err := e.Repo.FFBranch(branch); err != nil {
+			return err
+		}
+		short, _ := e.Repo.ShortSHA("refs/heads/" + branch)
+		e.info("pulled %s (%s)", branch, short)
+		return nil
+	case git.RelDiverged:
+		return e.pullOtherDiverged(branch)
+	default:
+		return fmt.Errorf("cannot pull %s: unexpected remote relation %s", branch, rel)
+	}
+}
+
+// pullOtherDiverged updates a diverged non-HEAD branch, restoring checkout after.
+func (e *Engine) pullOtherDiverged(branch string) error {
+	// Prefer rebase when pull.rebase (or branch.<name>.rebase) is enabled —
+	// git rebase <upstream> <branch> checks out branch, so restore after.
+	if e.pullWantsRebase(branch) {
+		e.info("git pull --rebase (%s, no permanent checkout)", branch)
+		return e.runPreservingCheckout(func() error {
+			if err := e.Repo.RebaseOntoOrigin(branch); err != nil {
+				if e.Repo.InRebase() {
+					return e.finishRebaseFailure(branch, err)
+				}
+				return err
+			}
+			short, _ := e.Repo.ShortSHA("refs/heads/" + branch)
+			e.info("pulled %s (%s)", branch, short)
+			return nil
+		})
+	}
+
+	// Merge-style pull needs to be on the branch; switch, pull, switch back.
+	e.info("git pull (%s, restoring checkout after)", branch)
+	return e.runPreservingCheckout(func() error {
+		if err := e.Repo.Switch(branch); err != nil {
+			return err
+		}
+		out, err := e.Repo.Pull()
+		if err != nil {
+			if e.Repo.InRebase() {
+				return e.finishRebaseFailure(branch, err)
+			}
+			return err
+		}
+		e.surfacePullOutput(out)
+		short, _ := e.Repo.ShortSHA("HEAD")
+		e.info("pulled %s (%s)", branch, short)
+		return nil
+	})
+}
+
+func (e *Engine) pullWantsRebase(branch string) bool {
+	// branch.<name>.rebase overrides pull.rebase (same as git).
+	if v := e.Repo.ConfigGet("branch." + branch + ".rebase"); v != "" {
+		return v != "false"
+	}
+	v := e.Repo.ConfigGet("pull.rebase")
+	return v == "true" || v == "merges" || v == "interactive" || v == "1"
+}
+
+func (e *Engine) surfacePullOutput(out string) {
+	if out == "" {
+		return
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			e.info("%s", line)
+		}
+	}
 }
 
 // Parent prints inferred parent of branch (default: current).

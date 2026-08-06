@@ -1131,7 +1131,7 @@ func helpView() string {
 	b.WriteString(helpLine("p", "push selected (force-with-lease)") + "\n")
 	b.WriteString(helpLine("P", "create/retarget PR (gh)") + "\n")
 	b.WriteString(helpLine("f", "fetch origin") + "\n")
-	b.WriteString(helpLine("F", "pull selected (git pull; uses upstream + pull config)") + "\n")
+	b.WriteString(helpLine("F", "pull selected (FF/update without switching checkout)") + "\n")
 	b.WriteString(helpLine("y", "copy branch name to clipboard") + "\n")
 	b.WriteString(helpLine("Y", "copy full commit SHA to clipboard") + "\n")
 	b.WriteString(helpLine("v", "open PR in browser (gh pr view --web)") + "\n")

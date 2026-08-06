@@ -14,11 +14,19 @@ import (
 
 func withTempRepo(t *testing.T, fn func(dir string, eng *stack.Engine, repo *git.Repo)) {
 	t.Helper()
-	dir := t.TempDir()
+	// Prefer MkdirTemp over t.TempDir: git objects can race macOS RemoveAll and
+	// mark otherwise-passing tests as failed on cleanup.
+	dir, err := os.MkdirTemp("", "git-stack-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		// Avoid optional locks / background maintenance during tests.
+		cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -28,6 +36,8 @@ func withTempRepo(t *testing.T, fn func(dir string, eng *stack.Engine, repo *git
 	run("config", "user.email", "stack-test@example.com")
 	run("config", "user.name", "stack-test")
 	run("config", "commit.gpgsign", "false")
+	run("config", "gc.auto", "0")
+	run("config", "maintenance.auto", "false")
 	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -40,10 +50,22 @@ func withTempRepo(t *testing.T, fn func(dir string, eng *stack.Engine, repo *git
 	fn(dir, eng, repo)
 }
 
+// tempDir is like t.TempDir but best-effort cleanup (see withTempRepo).
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "git-stack-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func gitRun(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -443,7 +465,7 @@ func TestSync_WithoutOntoTrunkSkipsMain(t *testing.T) {
 func TestRemoteRelation(t *testing.T) {
 	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
 		// bare remote
-		remote := t.TempDir()
+		remote := tempDir(t)
 		gitRun(t, remote, "init", "-q", "--bare", "-b", "main")
 		gitRun(t, dir, "remote", "add", "origin", remote)
 		gitRun(t, dir, "push", "-u", "origin", "main")
@@ -457,7 +479,7 @@ func TestRemoteRelation(t *testing.T) {
 		}
 
 		// advance remote
-		other := t.TempDir()
+		other := tempDir(t)
 		gitRun(t, other, "clone", "-q", remote, ".")
 		gitRun(t, other, "config", "user.email", "t@t.com")
 		gitRun(t, other, "config", "user.name", "t")
@@ -475,7 +497,7 @@ func TestRemoteRelation(t *testing.T) {
 
 func TestRestack_FFBehindBeforeRestack(t *testing.T) {
 	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
-		remote := t.TempDir()
+		remote := tempDir(t)
 		gitRun(t, remote, "init", "-q", "--bare", "-b", "main")
 		gitRun(t, dir, "remote", "add", "origin", remote)
 		gitRun(t, dir, "push", "-u", "origin", "main")
@@ -489,7 +511,7 @@ func TestRestack_FFBehindBeforeRestack(t *testing.T) {
 		gitRun(t, dir, "push", "-u", "origin", "api.ui")
 
 		// advance parent on remote
-		other := t.TempDir()
+		other := tempDir(t)
 		gitRun(t, other, "clone", "-q", remote, ".")
 		gitRun(t, other, "config", "user.email", "t@t.com")
 		gitRun(t, other, "config", "user.name", "t")
@@ -514,7 +536,7 @@ func TestRestack_FFBehindBeforeRestack(t *testing.T) {
 
 func TestRestack_DivergedBlocks(t *testing.T) {
 	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
-		remote := t.TempDir()
+		remote := tempDir(t)
 		gitRun(t, remote, "init", "-q", "--bare", "-b", "main")
 		gitRun(t, dir, "remote", "add", "origin", remote)
 		gitRun(t, dir, "push", "-u", "origin", "main")
@@ -526,7 +548,7 @@ func TestRestack_DivergedBlocks(t *testing.T) {
 		writeCommit(t, dir, "ui.txt", "u1", "ui-1")
 
 		// diverge api: local and remote different commits
-		other := t.TempDir()
+		other := tempDir(t)
 		gitRun(t, other, "clone", "-q", remote, ".")
 		gitRun(t, other, "config", "user.email", "t@t.com")
 		gitRun(t, other, "config", "user.name", "t")
@@ -606,6 +628,223 @@ func TestReparent(t *testing.T) {
 		}
 		if !repo.IsAncestor("refs/heads/b", "refs/heads/a.child") {
 			t.Fatal("a.child should be on b")
+		}
+	})
+}
+
+func currentBranch(t *testing.T, dir string) string {
+	t.Helper()
+	return gitRun(t, dir, "rev-parse", "--abbrev-ref", "HEAD")
+}
+
+// Restack of a non-current branch must not leave HEAD on that branch.
+func TestRestack_PreservesCheckout(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "branch", "api")
+		gitRun(t, dir, "checkout", "-q", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+
+		gitRun(t, dir, "checkout", "-q", "-b", "api.ui")
+		writeCommit(t, dir, "ui.txt", "u1", "ui-1")
+
+		// Advance parent while staying on api (not api.ui).
+		gitRun(t, dir, "checkout", "-q", "api")
+		writeCommit(t, dir, "api.txt", "a2", "api-2")
+
+		if got := currentBranch(t, dir); got != "api" {
+			t.Fatalf("precondition: want api, got %s", got)
+		}
+		if err := eng.Restack(stack.RestackOpts{Branch: "api.ui", NoFetch: true}); err != nil {
+			t.Fatal(err)
+		}
+		if got := currentBranch(t, dir); got != "api" {
+			t.Fatalf("restack changed checkout to %s; want api", got)
+		}
+		if !repo.IsAncestor("refs/heads/api", "refs/heads/api.ui") {
+			t.Fatal("api not ancestor of api.ui after restack")
+		}
+		subjects := gitRun(t, dir, "log", "--reverse", "--format=%s", "api..api.ui")
+		if subjects != "ui-1" {
+			t.Fatalf("after restack expected only ui-1, got: %s", subjects)
+		}
+	})
+}
+
+// Sync restack of descendants must not change the current branch.
+func TestSync_PreservesCheckout(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "checkout", "-q", "-b", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+		gitRun(t, dir, "checkout", "-q", "-b", "api.ui")
+		writeCommit(t, dir, "ui.txt", "u1", "ui-1")
+		gitRun(t, dir, "checkout", "-q", "api")
+		writeCommit(t, dir, "api.txt", "a2", "api-2")
+
+		if got := currentBranch(t, dir); got != "api" {
+			t.Fatalf("precondition: want api, got %s", got)
+		}
+		if _, err := eng.Sync(stack.SyncOpts{Root: "api", NoFetch: true}); err != nil {
+			t.Fatal(err)
+		}
+		if got := currentBranch(t, dir); got != "api" {
+			t.Fatalf("sync changed checkout to %s; want api", got)
+		}
+		if !repo.IsAncestor("refs/heads/api", "refs/heads/api.ui") {
+			t.Fatal("not stacked after sync")
+		}
+	})
+}
+
+// Reparent of a non-current branch must not leave HEAD on that branch.
+func TestReparent_PreservesCheckout(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "checkout", "-q", "-b", "a")
+		writeCommit(t, dir, "a.txt", "a", "a-1")
+		gitRun(t, dir, "checkout", "-q", "main")
+		gitRun(t, dir, "checkout", "-q", "-b", "b")
+		writeCommit(t, dir, "b.txt", "b", "b-1")
+		gitRun(t, dir, "checkout", "-q", "a")
+		gitRun(t, dir, "checkout", "-q", "-b", "a.child")
+		writeCommit(t, dir, "c.txt", "c", "child-1")
+
+		// Stay on a; reparent a.child onto b.
+		gitRun(t, dir, "checkout", "-q", "a")
+		if err := eng.Reparent(stack.ReparentOpts{
+			Branch:    "a.child",
+			NewParent: "b",
+			NoFetch:   true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := currentBranch(t, dir); got != "a" {
+			t.Fatalf("reparent changed checkout to %s; want a", got)
+		}
+		if !repo.IsAncestor("refs/heads/b", "refs/heads/a.child") {
+			t.Fatal("a.child should be on b")
+		}
+	})
+}
+
+// Pull of another branch that is behind origin must FF without switching.
+func TestPull_OtherBranchFF_PreservesCheckout(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		remote := tempDir(t)
+		gitRun(t, remote, "init", "-q", "--bare", "-b", "main")
+		gitRun(t, dir, "remote", "add", "origin", remote)
+		gitRun(t, dir, "push", "-u", "origin", "main")
+
+		gitRun(t, dir, "checkout", "-q", "-b", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+		gitRun(t, dir, "push", "-u", "origin", "api")
+
+		// Advance remote api via another clone.
+		other := tempDir(t)
+		gitRun(t, other, "clone", "-q", remote, ".")
+		gitRun(t, other, "config", "user.email", "t@t.com")
+		gitRun(t, other, "config", "user.name", "t")
+		gitRun(t, other, "config", "commit.gpgsign", "false")
+		gitRun(t, other, "checkout", "-q", "api")
+		writeCommit(t, other, "api.txt", "a2", "api-2")
+		gitRun(t, other, "push", "origin", "api")
+
+		// Stay on main; pull api without checkout.
+		gitRun(t, dir, "checkout", "-q", "main")
+		beforeAPI := gitRun(t, dir, "rev-parse", "api")
+		if err := eng.Pull("api"); err != nil {
+			t.Fatal(err)
+		}
+		if got := currentBranch(t, dir); got != "main" {
+			t.Fatalf("pull changed checkout to %s; want main", got)
+		}
+		afterAPI := gitRun(t, dir, "rev-parse", "api")
+		if beforeAPI == afterAPI {
+			t.Fatal("api tip should have advanced")
+		}
+		if rel := repo.RemoteRelationOf("api"); rel != git.RelInSync {
+			t.Fatalf("api should be in-sync after pull, got %s", rel)
+		}
+		// Working tree should still be main's tree (not switched).
+		if _, err := os.Stat(filepath.Join(dir, "api.txt")); err == nil {
+			t.Fatal("api.txt should not be in worktree while on main")
+		}
+	})
+}
+
+// Pull of the current branch still uses git pull and stays on that branch.
+func TestPull_CurrentBranch(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		remote := tempDir(t)
+		gitRun(t, remote, "init", "-q", "--bare", "-b", "main")
+		gitRun(t, dir, "remote", "add", "origin", remote)
+		gitRun(t, dir, "push", "-u", "origin", "main")
+
+		gitRun(t, dir, "checkout", "-q", "-b", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+		gitRun(t, dir, "push", "-u", "origin", "api")
+
+		other := tempDir(t)
+		gitRun(t, other, "clone", "-q", remote, ".")
+		gitRun(t, other, "config", "user.email", "t@t.com")
+		gitRun(t, other, "config", "user.name", "t")
+		gitRun(t, other, "config", "commit.gpgsign", "false")
+		gitRun(t, other, "checkout", "-q", "api")
+		writeCommit(t, other, "api.txt", "a2", "api-2")
+		gitRun(t, other, "push", "origin", "api")
+
+		// On api; pull should FF and stay on api.
+		if err := eng.Pull("api"); err != nil {
+			t.Fatal(err)
+		}
+		if got := currentBranch(t, dir); got != "api" {
+			t.Fatalf("want api, got %s", got)
+		}
+		if rel := repo.RemoteRelationOf("api"); rel != git.RelInSync {
+			t.Fatalf("want in-sync got %s", rel)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "api.txt")); err != nil {
+			t.Fatal("api.txt should be present after pull on api")
+		}
+	})
+}
+
+// EnsureRemoteReady / restack FF of a parent must not switch branches.
+func TestRestack_FFParent_PreservesCheckout(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		remote := tempDir(t)
+		gitRun(t, remote, "init", "-q", "--bare", "-b", "main")
+		gitRun(t, dir, "remote", "add", "origin", remote)
+		gitRun(t, dir, "push", "-u", "origin", "main")
+
+		gitRun(t, dir, "checkout", "-q", "-b", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+		gitRun(t, dir, "push", "-u", "origin", "api")
+
+		gitRun(t, dir, "checkout", "-q", "-b", "api.ui")
+		writeCommit(t, dir, "ui.txt", "u1", "ui-1")
+		gitRun(t, dir, "push", "-u", "origin", "api.ui")
+
+		other := tempDir(t)
+		gitRun(t, other, "clone", "-q", remote, ".")
+		gitRun(t, other, "config", "user.email", "t@t.com")
+		gitRun(t, other, "config", "user.name", "t")
+		gitRun(t, other, "config", "commit.gpgsign", "false")
+		gitRun(t, other, "checkout", "-q", "api")
+		writeCommit(t, other, "api.txt", "a2", "api-2")
+		gitRun(t, other, "push", "origin", "api")
+
+		// Stay on main; restack api.ui should FF api then restack, stay on main.
+		gitRun(t, dir, "checkout", "-q", "main")
+		if err := eng.Restack(stack.RestackOpts{Branch: "api.ui"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := currentBranch(t, dir); got != "main" {
+			t.Fatalf("restack changed checkout to %s; want main", got)
+		}
+		if rel := repo.RemoteRelationOf("api"); rel != git.RelInSync {
+			t.Fatalf("api should be FF'd, got %s", rel)
+		}
+		if !repo.IsAncestor("refs/heads/api", "refs/heads/api.ui") {
+			t.Fatal("not stacked")
 		}
 	})
 }
