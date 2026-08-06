@@ -260,6 +260,11 @@ type RestackOpts struct {
 	Push      bool
 	OntoTrunk bool
 	NoFetch   bool
+	// Descendants auto-confirms restacking children that need it (CLI: --descendants).
+	Descendants bool
+	// ConfirmDescendants overrides the y/N prompt (tests / TUI). nil → stdin prompt.
+	// Default when prompt is declined or non-interactive: do not restack descendants.
+	ConfirmDescendants func(pending []string) bool
 }
 
 // Restack replays branch onto parent (or ancestor chain with OntoTrunk).
@@ -334,8 +339,114 @@ func (e *Engine) Restack(opts RestackOpts) error {
 		if err := e.MaybePush(b, opts.Push); err != nil {
 			return err
 		}
+		e.noteNeedsPush(b, opts.Push)
+	}
+
+	// Optionally continue with descendants that now need restack.
+	return e.maybeRestackDescendants(branch, opts)
+}
+
+// maybeRestackDescendants prompts (or auto-confirms) restacking children of branch.
+func (e *Engine) maybeRestackDescendants(root string, opts RestackOpts) error {
+	pending, err := e.descendantsNeedingRestack(root)
+	if err != nil || len(pending) == 0 {
+		return err
+	}
+
+	yes := opts.Descendants
+	if !yes {
+		if opts.ConfirmDescendants != nil {
+			yes = opts.ConfirmDescendants(pending)
+		} else {
+			yes = e.promptYesDefaultNo(fmt.Sprintf(
+				"Restack %d descendant(s) (%s)? [y/N] ",
+				len(pending), strings.Join(pending, ", "),
+			))
+		}
+	}
+	if !yes {
+		e.info("skipped descendants; later: git-stack restack <child>  or  restack %s --descendants", root)
+		return nil
+	}
+
+	e.info("restacking descendants: %s", strings.Join(pending, " "))
+	for _, b := range pending {
+		if err := e.EnsureRemoteReady(b); err != nil {
+			return wrapRemoteErr(fmt.Sprintf("fix '%s' vs origin before restacking", b), err)
+		}
+		parent := e.ParentOf(b)
+		if e.Repo.LocalBranchExists(parent) {
+			if err := e.EnsureRemoteReady(parent); err != nil {
+				return wrapRemoteErr(fmt.Sprintf("fix parent '%s' vs origin before restacking", parent), err)
+			}
+		}
+		pref := ""
+		if opts.OntoTrunk && e.IsTrunk(parent) {
+			var err error
+			pref, err = e.TrunkRef()
+			if err != nil {
+				return err
+			}
+		}
+		if err := e.RestackBranch(b, parent, pref); err != nil {
+			return err
+		}
+		if err := e.MaybePush(b, opts.Push); err != nil {
+			return err
+		}
+		e.noteNeedsPush(b, opts.Push)
 	}
 	return nil
+}
+
+func (e *Engine) descendantsNeedingRestack(root string) ([]string, error) {
+	kids, err := e.DescendantsOf(root)
+	if err != nil {
+		return nil, err
+	}
+	sorted := e.SortByDepth(kids)
+	var pending []string
+	for _, b := range sorted {
+		if !e.Repo.LocalBranchExists(b) {
+			continue
+		}
+		parent := e.ParentOf(b)
+		if e.BranchNeedsRestack(b, parent, "") {
+			pending = append(pending, b)
+		}
+	}
+	return pending, nil
+}
+
+func (e *Engine) noteNeedsPush(branch string, alreadyPushed bool) {
+	if alreadyPushed {
+		return
+	}
+	rel := e.Repo.RemoteRelationOf(branch)
+	if rel == git.RelDiverged || rel == git.RelAhead {
+		e.info("%s", e.NeedsPushHint(branch))
+	}
+}
+
+// promptYesDefaultNo asks on In/Out; empty or anything but y/yes → false.
+func (e *Engine) promptYesDefaultNo(prompt string) bool {
+	w := e.writer()
+	fmt.Fprint(w, "stack: "+prompt)
+	in := e.In
+	if in == nil {
+		in = os.Stdin
+	}
+	// Non-interactive: default no.
+	if f, ok := in.(*os.File); ok {
+		if fi, err := f.Stat(); err == nil && (fi.Mode()&os.ModeCharDevice) == 0 {
+			fmt.Fprintln(w, "n")
+			return false
+		}
+	}
+	var line string
+	_, _ = fmt.Fscanln(in, &line)
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "y" || line == "yes"
 }
 
 // ReparentOpts for Reparent.
@@ -516,9 +627,8 @@ func (e *Engine) Sync(opts SyncOpts) (*SyncResult, error) {
 		}
 		rel := e.Repo.RemoteRelationOf(b)
 		relFor[b] = rel
-		if rel == git.RelDiverged {
-			result.Blockers = append(result.Blockers, b+": diverged from origin")
-		} else if rel == git.RelBehind {
+		// Diverged (needs-push) is not a blocker — local tip is used after restack.
+		if rel == git.RelBehind {
 			ffList = append(ffList, b)
 		}
 	}
@@ -526,9 +636,7 @@ func (e *Engine) Sync(opts SyncOpts) (*SyncResult, error) {
 	if e.Repo.LocalBranchExists(rootParent) {
 		if opts.OntoTrunk || !e.IsTrunk(rootParent) {
 			rel := e.Repo.RemoteRelationOf(rootParent)
-			if rel == git.RelDiverged {
-				result.Blockers = append(result.Blockers, rootParent+": diverged from origin")
-			} else if rel == git.RelBehind {
+			if rel == git.RelBehind {
 				if !contains(ffList, rootParent) {
 					ffList = append(ffList, rootParent)
 				}
@@ -619,13 +727,16 @@ func (e *Engine) Sync(opts SyncOpts) (*SyncResult, error) {
 		if rel == "" {
 			rel = git.RelNone
 		}
-		if rel == "missing" || rel == git.RelDiverged {
+		if rel == "missing" {
 			result.Plan = append(result.Plan, PlanRow{Branch: b, Remote: rel, Action: "BLOCKER"})
 			continue
 		}
 		var actions []string
 		if rel == git.RelBehind {
 			actions = append(actions, "ff")
+		}
+		if rel == git.RelDiverged {
+			actions = append(actions, "needs-push")
 		}
 		parent := e.ParentOf(b)
 		var note string
@@ -672,12 +783,6 @@ func (e *Engine) Sync(opts SyncOpts) (*SyncResult, error) {
 		e.info("aborting; fix blockers before apply:")
 		for _, blk := range result.Blockers {
 			fmt.Fprintf(w, "  - %s\n", blk)
-			if strings.Contains(blk, ": diverged from origin") {
-				dname := strings.SplitN(blk, ":", 2)[0]
-				if e.Repo.LocalBranchExists(dname) && e.Repo.OriginBranchExists(dname) {
-					fmt.Fprint(w, e.DivergePlaybook(dname))
-				}
-			}
 		}
 		return result, fmt.Errorf("sync blocked")
 	}
@@ -964,7 +1069,7 @@ func FormatList(root string, infos []BranchInfo) string {
 		infos = OrderAsTree(infos)
 	}
 	// Use display width (runes), not bytes — tree glyphs are multi-byte UTF-8.
-	branchW, shaW, ownW, statusW, remoteW, prW := 8, 7, 3, dispWidth("[needs-restack]"), dispWidth("diverged"), dispWidth("PR")
+	branchW, shaW, ownW, statusW, remoteW, prW := 8, 7, 3, dispWidth("[needs-restack]"), dispWidth("needs-push"), dispWidth("PR")
 	for _, info := range infos {
 		if n := dispWidth(info.TreePrefix) + dispWidth(info.Name); n > branchW {
 			branchW = n

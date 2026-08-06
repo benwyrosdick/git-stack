@@ -534,7 +534,8 @@ func TestRestack_FFBehindBeforeRestack(t *testing.T) {
 	})
 }
 
-func TestRestack_DivergedBlocks(t *testing.T) {
+// After rewrite, parent may diverge from origin — restack of children must still work.
+func TestRestack_DivergedParentDoesNotBlock(t *testing.T) {
 	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
 		remote := tempDir(t)
 		gitRun(t, remote, "init", "-q", "--bare", "-b", "main")
@@ -547,23 +548,35 @@ func TestRestack_DivergedBlocks(t *testing.T) {
 		gitRun(t, dir, "checkout", "-q", "-b", "api.ui")
 		writeCommit(t, dir, "ui.txt", "u1", "ui-1")
 
-		// diverge api: local and remote different commits
+		// Rewrite parent (simulates restack onto newer main) while origin lags.
+		gitRun(t, dir, "checkout", "-q", "api")
+		writeCommit(t, dir, "api.txt", "a2", "api-2")
+		// origin/api still at a1 → diverged once we... wait, we're ahead not diverged.
+		// True diverge: remote also advanced differently.
 		other := tempDir(t)
 		gitRun(t, other, "clone", "-q", remote, ".")
 		gitRun(t, other, "config", "user.email", "t@t.com")
 		gitRun(t, other, "config", "user.name", "t")
 		gitRun(t, other, "config", "commit.gpgsign", "false")
 		gitRun(t, other, "checkout", "-q", "api")
-		writeCommit(t, other, "api.txt", "remote", "api-remote")
-		gitRun(t, other, "push", "origin", "api")
-
-		gitRun(t, dir, "checkout", "-q", "api")
-		writeCommit(t, dir, "api.txt", "local", "api-local")
+		// force remote to old tip's sibling
+		gitRun(t, other, "reset", "--hard", "origin/api")
+		writeCommit(t, other, "api.txt", "remote-only", "api-remote")
+		gitRun(t, other, "push", "--force", "origin", "api")
 		gitRun(t, dir, "fetch", "origin")
 
-		err := eng.Restack(stack.RestackOpts{Branch: "api.ui", NoFetch: true})
-		if err == nil {
-			t.Fatal("expected diverge block")
+		if rel := repo.RemoteRelationOf("api"); rel != git.RelDiverged {
+			t.Fatalf("precondition: want needs-push/diverged, got %s", rel)
+		}
+		// Stay on api; restack child despite diverged parent.
+		if err := eng.Restack(stack.RestackOpts{Branch: "api.ui", NoFetch: true}); err != nil {
+			t.Fatal(err)
+		}
+		if !repo.IsAncestor("refs/heads/api", "refs/heads/api.ui") {
+			t.Fatal("api.ui should sit on local api tip")
+		}
+		if got := currentBranch(t, dir); got != "api" {
+			t.Fatalf("checkout changed to %s", got)
 		}
 	})
 }
@@ -845,6 +858,145 @@ func TestRestack_FFParent_PreservesCheckout(t *testing.T) {
 		}
 		if !repo.IsAncestor("refs/heads/api", "refs/heads/api.ui") {
 			t.Fatal("not stacked")
+		}
+	})
+}
+
+// Restack parent then descendants with --descendants (no prompt).
+func TestRestack_DescendantsFlag(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "checkout", "-q", "-b", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+		gitRun(t, dir, "checkout", "-q", "-b", "api.ui")
+		writeCommit(t, dir, "ui.txt", "u1", "ui-1")
+		gitRun(t, dir, "checkout", "-q", "api")
+		writeCommit(t, dir, "api.txt", "a2", "api-2")
+
+		// api.ui needs restack; restack api is noop for api itself but...
+		// Restack api.ui via parent restack --descendants from api after advancing main? 
+		// Parent api is already tip of itself. Better: restack scenario from ui parent move.
+		// Advance api while ui is based on old api:
+		if !eng.BranchNeedsRestack("api.ui", "api", "") {
+			t.Fatal("precondition: api.ui should need restack")
+		}
+		// Restack from api with descendants should pick up api.ui
+		if err := eng.Restack(stack.RestackOpts{
+			Branch:      "api",
+			NoFetch:     true,
+			Descendants: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !repo.IsAncestor("refs/heads/api", "refs/heads/api.ui") {
+			t.Fatal("descendant not restacked")
+		}
+	})
+}
+
+// Default prompt path declines descendants.
+func TestRestack_DescendantsPromptDefaultNo(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "checkout", "-q", "-b", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+		gitRun(t, dir, "checkout", "-q", "-b", "api.ui")
+		writeCommit(t, dir, "ui.txt", "u1", "ui-1")
+		gitRun(t, dir, "checkout", "-q", "api")
+		writeCommit(t, dir, "api.txt", "a2", "api-2")
+
+		called := false
+		if err := eng.Restack(stack.RestackOpts{
+			Branch:  "api",
+			NoFetch: true,
+			ConfirmDescendants: func(pending []string) bool {
+				called = true
+				if len(pending) != 1 || pending[0] != "api.ui" {
+					t.Fatalf("pending=%v", pending)
+				}
+				return false
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !called {
+			t.Fatal("expected descendant prompt")
+		}
+		if repo.IsAncestor("refs/heads/api", "refs/heads/api.ui") {
+			t.Fatal("child should not restack when prompt declines")
+		}
+	})
+}
+
+// Absorbed child: parent already has equivalent patches (e.g. cherry-pick/squash of child).
+func TestRestack_AbsorbedChildResetsToParent(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		gitRun(t, dir, "checkout", "-q", "-b", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+
+		gitRun(t, dir, "checkout", "-q", "-b", "api.ui")
+		writeCommit(t, dir, "ui.txt", "u1", "ui-1")
+		uiCommit := gitRun(t, dir, "rev-parse", "HEAD")
+
+		// Parent absorbs the same patch (simulates squash/cherry into parent).
+		gitRun(t, dir, "checkout", "-q", "api")
+		gitRun(t, dir, "cherry-pick", "-x", uiCommit)
+
+		if repo.IsAncestor("refs/heads/api", "refs/heads/api.ui") {
+			t.Fatal("precondition: child should not be on parent tip")
+		}
+		eq, n, err := repo.CherryEquivalent("refs/heads/api", "refs/heads/api.ui")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !eq || n == 0 {
+			t.Fatalf("precondition: expected cherry-equivalent child, eq=%v n=%d", eq, n)
+		}
+
+		gitRun(t, dir, "checkout", "-q", "main")
+		if err := eng.Restack(stack.RestackOpts{Branch: "api.ui", NoFetch: true}); err != nil {
+			t.Fatal(err)
+		}
+		apiTip := gitRun(t, dir, "rev-parse", "api")
+		childTip := gitRun(t, dir, "rev-parse", "api.ui")
+		if apiTip != childTip {
+			t.Fatalf("absorbed child should match parent tip: api=%s ui=%s", apiTip, childTip)
+		}
+		if got := currentBranch(t, dir); got != "main" {
+			t.Fatalf("checkout changed to %s", got)
+		}
+	})
+}
+
+func TestDivergePlaybook_PrefersForcePush(t *testing.T) {
+	withTempRepo(t, func(dir string, eng *stack.Engine, repo *git.Repo) {
+		remote := tempDir(t)
+		gitRun(t, remote, "init", "-q", "--bare", "-b", "main")
+		gitRun(t, dir, "remote", "add", "origin", remote)
+		gitRun(t, dir, "push", "-u", "origin", "main")
+		gitRun(t, dir, "checkout", "-q", "-b", "api")
+		writeCommit(t, dir, "api.txt", "a1", "api-1")
+		gitRun(t, dir, "push", "-u", "origin", "api")
+		writeCommit(t, dir, "api.txt", "a2", "api-2")
+		// Make remote diverge
+		other := tempDir(t)
+		gitRun(t, other, "clone", "-q", remote, ".")
+		gitRun(t, other, "config", "user.email", "t@t.com")
+		gitRun(t, other, "config", "user.name", "t")
+		gitRun(t, other, "config", "commit.gpgsign", "false")
+		gitRun(t, other, "checkout", "-q", "api")
+		writeCommit(t, other, "api.txt", "remote", "r")
+		gitRun(t, other, "push", "--force", "origin", "api")
+		gitRun(t, dir, "fetch", "origin")
+
+		pb := eng.DivergePlaybook("api")
+		if !strings.Contains(pb, "force-with-lease") {
+			t.Fatalf("playbook should recommend force-with-lease:\n%s", pb)
+		}
+		if strings.Contains(pb, "cannot cleanly proceed") {
+			t.Fatalf("old blocking wording still present:\n%s", pb)
+		}
+		// reset --hard origin should only appear as last-resort discard
+		if !strings.Contains(pb, "Only discard local") {
+			t.Fatalf("should warn before discard:\n%s", pb)
 		}
 	})
 }

@@ -79,7 +79,7 @@ func remoteStyled(r git.RemoteRelation, bg *lipgloss.Color) string {
 		return styleOn(bg, colGreen, false).Render(s)
 	case git.RelBehind:
 		return styleOn(bg, colYellow, false).Render(s)
-	case git.RelDiverged:
+	case git.RelDiverged: // displayed as "needs-push"
 		return styleOn(bg, colOrange, false).Render(s)
 	case git.RelAhead:
 		return styleOn(bg, colTitle, false).Render(s)
@@ -876,7 +876,7 @@ func columnLayout(infos []stack.BranchInfo) colLayout {
 	if n := lipgloss.Width("[needs-restack]"); n > cols.status {
 		cols.status = n
 	}
-	if n := lipgloss.Width("diverged"); n > cols.remote {
+	if n := lipgloss.Width("needs-push"); n > cols.remote {
 		cols.remote = n
 	}
 	for _, info := range infos {
@@ -1152,7 +1152,7 @@ func helpView() string {
 	b.WriteString(helpStyle.Render("  Remote: ") +
 		styleOn(nil, colGreen, false).Render("in-sync") + helpStyle.Render(" · ") +
 		styleOn(nil, colYellow, false).Render("behind") + helpStyle.Render(" · ") +
-		styleOn(nil, colOrange, false).Render("diverged") + helpStyle.Render(" · ") +
+		styleOn(nil, colOrange, false).Render("needs-push") + helpStyle.Render(" · ") +
 		styleOn(nil, colTitle, false).Render("ahead") + "\n")
 	b.WriteString(helpStyle.Render("  Cursor: ") +
 		styleOn(nil, colAccent, true).Render(">") + helpStyle.Render(" + muted bar  ·  HEAD: ") +

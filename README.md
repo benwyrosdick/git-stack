@@ -32,7 +32,7 @@ git-stack                  # interactive TUI
 git-stack ls [root]
 git-stack parent [branch] [-v]          # -v shows source: pr|local|name|trunk
 git-stack create <name> [--from <start>]
-git-stack restack [branch] [--push] [--onto-trunk] [--no-fetch]
+git-stack restack [branch] [--push] [--onto-trunk] [--no-fetch] [--descendants]
 git-stack reparent <branch> <new-parent> [--from <old>] [--push] [--no-fetch]
 git-stack sync [root] [--push] [--onto-trunk] [--dry-run] [--no-fetch]
 git-stack pr [branch] [--draft]
@@ -70,6 +70,7 @@ main
 | --- | --- | --- |
 | **Back** | `restack` | Put **me** on my parent tip |
 | **Back** + trunk | `restack --onto-trunk` | Restack chain onto trunk path |
+| **Back** + kids | `restack --descendants` | Restack me, then children (or prompt y/N) |
 | **Forward** | `sync` | Fix root on parent, then descendants |
 | **Forward** + trunk | `sync --onto-trunk` | Include trunk |
 
@@ -110,9 +111,11 @@ Trunk is never absorbed unless `--onto-trunk`.
 ## Safety
 
 - Tracked dirty worktree / rebase-in-progress refused (untracked OK)
-- Diverged local/origin blocks the plan
+- Diverged local/origin is **needs-push** (force-with-lease) — stack ops still use the local tip
 - Push opt-in via `--push` (`--force-with-lease`)
 - Restack cutoff prefers `git merge-base --fork-point`
+- After restack, optional prompt to restack descendants (`--descendants` to auto-yes)
+- Squash-absorbed children (patches already on parent) reset to parent tip instead of conflict-rebasing
 
 ## Development
 

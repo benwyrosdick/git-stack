@@ -59,6 +59,7 @@ func Run(args []string) error {
 		return runTUI(false, false)
 	}
 	// Global flags may appear before subcommand.
+	// Note: -v is NOT global — parent uses -v for verbose. Use --version or `version`.
 	offline, refresh := false, false
 	filtered := make([]string, 0, len(args))
 	for _, a := range args {
@@ -67,8 +68,7 @@ func Run(args []string) error {
 			offline = true
 		case "--refresh":
 			refresh = true
-		case "--version", "-v":
-			// Allow as a global flag anywhere in the arg list.
+		case "--version":
 			fmt.Println(ResolvedVersion())
 			return nil
 		default:
@@ -79,13 +79,18 @@ func Run(args []string) error {
 	if len(args) == 0 {
 		return runTUI(offline, refresh)
 	}
+	// Bare -v / version as the only command.
+	if len(args) == 1 && (args[0] == "-v" || args[0] == "version" || args[0] == "--version") {
+		fmt.Println(ResolvedVersion())
+		return nil
+	}
 	cmd := args[0]
 	rest := args[1:]
 	switch cmd {
 	case "help", "-h", "--help":
 		printHelp(os.Stdout)
 		return nil
-	case "version", "--version", "-v":
+	case "version", "--version":
 		fmt.Println(ResolvedVersion())
 		return nil
 	case "upgrade":
@@ -201,6 +206,8 @@ func cmdRestack(args []string, offline, refresh bool) error {
 			opts.OntoTrunk = true
 		case "--no-fetch":
 			opts.NoFetch = true
+		case "--descendants":
+			opts.Descendants = true
 		default:
 			if strings.HasPrefix(a, "-") {
 				return fmt.Errorf("restack: unknown flag %s", a)
@@ -415,7 +422,7 @@ func printHelp(w io.Writer) {
   parent  [branch] [-v]                    Print parent ( -v shows source: pr|local|name)
   create  <name> [--from <start>]          Create branch; records parent metadata
   restack [branch] [--push] [--onto-trunk] Replay branch onto parent
-          [--no-fetch]
+          [--no-fetch] [--descendants]     (--descendants: also restack children)
   reparent <branch> <new-parent>           Rebase + update parent metadata / PR base
            [--from <old-parent>] [--push] [--no-fetch]
   sync    [root] [--push] [--onto-trunk]   Fix root then descendants
