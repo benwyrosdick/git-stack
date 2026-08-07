@@ -310,7 +310,9 @@ const (
 	RelInSync   RemoteRelation = "in-sync"
 	RelBehind   RemoteRelation = "behind"
 	RelAhead    RemoteRelation = "ahead"
-	RelDiverged RemoteRelation = "diverged"
+	// RelDiverged means local and origin tips have diverged. Displayed as
+	// "needs-push" in lists — after restack this is the normal publish state.
+	RelDiverged RemoteRelation = "needs-push"
 )
 
 // RemoteRelationOf classifies local vs origin for a local branch.
@@ -416,6 +418,44 @@ func (r *Repo) RebaseOnto(onto, upstream, branch string) error {
 // Caller decides whether to abort on failure (see stack.Engine.AbortOnConflict).
 func (r *Repo) RebaseOntoQuiet(onto, upstream, branch string) error {
 	return r.runOK("rebase", "--onto", onto, upstream, branch)
+}
+
+// ResetBranchTo moves branch to rev without leaving HEAD on branch when possible.
+// If branch is checked out, uses reset --hard (caller must ensure clean tree).
+func (r *Repo) ResetBranchTo(branch, rev string) error {
+	cur, err := r.CurrentBranch()
+	if err == nil && cur == branch {
+		return r.runOK("reset", "--hard", rev)
+	}
+	return r.runOK("branch", "-f", branch, rev)
+}
+
+// CherryEquivalent reports whether every commit in upstream..head is already
+// present on upstream with an equivalent patch (git cherry "-").
+// Used to detect squash-absorbed stack children.
+func (r *Repo) CherryEquivalent(upstream, head string) (allEquivalent bool, total int, err error) {
+	out, err := r.run("cherry", upstream, head)
+	if err != nil {
+		return false, 0, err
+	}
+	if out == "" {
+		return true, 0, nil
+	}
+	eq, notEq := 0, 0
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		switch line[0] {
+		case '-':
+			eq++
+		case '+':
+			notEq++
+		}
+	}
+	total = eq + notEq
+	return notEq == 0 && total > 0, total, nil
 }
 
 // PushForceWithLease pushes branch with --force-with-lease.

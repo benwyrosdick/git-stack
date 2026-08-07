@@ -25,6 +25,7 @@ const (
 type Engine struct {
 	Repo   *git.Repo
 	Out    io.Writer // info messages (stderr-like); defaults to os.Stderr
+	In     io.Reader // prompts; defaults to os.Stdin
 	Quiet  bool      // suppress interactive rebase attach (use quiet rebase)
 	NoPush bool      // ignored; push is per-call
 
@@ -53,17 +54,48 @@ func (e *Engine) AbortOnConflict() bool {
 	return e.ConflictMode != ConflictResolve
 }
 
+// runPreservingCheckout runs fn, then returns HEAD to the branch that was
+// checked out when the call started (if we moved away and are not mid-rebase).
+// Stack ops must not leave the user on a different branch after success.
+func (e *Engine) runPreservingCheckout(fn func() error) error {
+	cur, curErr := e.Repo.CurrentBranch()
+	fnErr := fn()
+	if curErr != nil {
+		return fnErr
+	}
+	// Leave conflicted rebases alone so the user can continue/abort in place.
+	if e.Repo.InRebase() {
+		return fnErr
+	}
+	now, nowErr := e.Repo.CurrentBranch()
+	if nowErr != nil || now == cur {
+		return fnErr
+	}
+	if !e.Repo.LocalBranchExists(cur) {
+		return fnErr
+	}
+	if switchErr := e.Repo.Switch(cur); switchErr != nil {
+		if fnErr != nil {
+			return fmt.Errorf("%w\n(also failed to return to %s: %v)", fnErr, cur, switchErr)
+		}
+		return fmt.Errorf("operation succeeded but failed to return to %s: %w", cur, switchErr)
+	}
+	return fnErr
+}
+
 func (e *Engine) rebaseOnto(onto, upstream, branch string) error {
-	var err error
-	if e.Quiet {
-		err = e.Repo.RebaseOntoQuiet(onto, upstream, branch)
-	} else {
-		err = e.Repo.RebaseOnto(onto, upstream, branch)
-	}
-	if err != nil {
-		return e.finishRebaseFailure(branch, err)
-	}
-	return nil
+	return e.runPreservingCheckout(func() error {
+		var err error
+		if e.Quiet {
+			err = e.Repo.RebaseOntoQuiet(onto, upstream, branch)
+		} else {
+			err = e.Repo.RebaseOnto(onto, upstream, branch)
+		}
+		if err != nil {
+			return e.finishRebaseFailure(branch, err)
+		}
+		return nil
+	})
 }
 
 // finishRebaseFailure aborts or leaves the in-progress rebase per ConflictMode.
@@ -178,6 +210,17 @@ func (e *Engine) RestackBranch(branch, parent, parentRefOverride string) error {
 		return nil
 	}
 
+	// Squash-absorbed child: every unique commit already exists on parent as an
+	// equivalent patch (common after GitHub squash-merge of the child PR).
+	if eq, n, err := e.Repo.CherryEquivalent(parentRef, branchRef); err == nil && eq && n > 0 {
+		e.info("%s: %d commit(s) already on %s (equivalent patches — likely squash); pointing %s at parent tip", branch, n, parent, branch)
+		if err := e.Repo.ResetBranchTo(branch, parentTip); err != nil {
+			return err
+		}
+		e.info("restacked %s onto %s (absorbed)", branch, parent)
+		return nil
+	}
+
 	n, _ := e.Repo.RevListCount(upstream + ".." + branchRef)
 	short := upstream
 	if len(short) > 8 {
@@ -219,7 +262,8 @@ func (e *Engine) BranchNeedsRestack(branch, parent, parentRefOverride string) bo
 // Remote safety
 // ---------------------------------------------------------------------------
 
-// DivergePlaybook returns recovery help for a diverged branch (multiline).
+// DivergePlaybook returns recovery help when local and origin have diverged.
+// After restack/sync this is usually "publish rewritten history", not "throw away local".
 func (e *Engine) DivergePlaybook(branch string) string {
 	l, _ := e.Repo.RevParse("refs/heads/" + branch)
 	rr, _ := e.Repo.RevParse("refs/remotes/origin/" + branch)
@@ -237,7 +281,7 @@ func (e *Engine) DivergePlaybook(branch string) string {
 	}
 	ls, _ := e.Repo.ShortSHA(l)
 	rs, _ := e.Repo.ShortSHA(rr)
-	return fmt.Sprintf(`cannot cleanly proceed — branch '%s' has diverged from origin
+	return fmt.Sprintf(`branch '%s' differs from origin (needs-push)
 
   local:  %s  (commits not on origin below)
   origin: %s  (commits not local below)
@@ -248,12 +292,19 @@ func (e *Engine) DivergePlaybook(branch string) string {
   Commits only on origin:
 %s
 
-  Resolve, then re-run:
-    # prefer remote tip, then re-apply local work
+  If you just restacked/synced, local is intentional — publish it:
+    git push --force-with-lease origin %s
+    # or: git-stack restack %s --push   (when restacking again)
+
+  Stack ops use the local tip; they are not blocked by this state.
+  Only discard local if you truly want the remote version:
     git switch %s && git reset --hard origin/%s
-    # or put local commits on top of origin:
-    git switch %s && git rebase origin/%s
 `, branch, ls, rs, onlyLocal, onlyRemote, branch, branch, branch, branch)
+}
+
+// NeedsPushHint is a one-line publish reminder after rewrite.
+func (e *Engine) NeedsPushHint(branch string) string {
+	return fmt.Sprintf("publish %s: git push --force-with-lease origin %s", branch, branch)
 }
 
 func indentBlock(s, prefix string) string {
@@ -277,12 +328,15 @@ func wrapRemoteErr(summary string, err error) error {
 	return fmt.Errorf("%s\n\n%s", summary, detail)
 }
 
-// EnsureRemoteReady FFs if behind; returns error (with playbook) if diverged.
+// EnsureRemoteReady FFs if behind. Diverged from origin no longer blocks:
+// after restack, local tip is the source of truth until force-with-lease push.
 func (e *Engine) EnsureRemoteReady(branch string) error {
 	rel := e.Repo.RemoteRelationOf(branch)
 	switch rel {
 	case git.RelDiverged:
-		return fmt.Errorf("%s", e.DivergePlaybook(branch))
+		e.info("%s: needs-push (diverged from origin; using local tip)", branch)
+		e.info("%s", e.NeedsPushHint(branch))
+		return nil
 	case git.RelBehind:
 		if err := e.Repo.FFBranch(branch); err != nil {
 			return err

@@ -7,7 +7,7 @@ import (
 )
 
 func TestWrapRemoteErr_Multiline(t *testing.T) {
-	play := `cannot cleanly proceed — branch 'wms-batching' has diverged from origin
+	play := `branch 'wms-batching' differs from origin (needs-push)
 
   local:  9b913d526  (commits not on origin below)
   origin: 9f59cb973  (commits not local below)
@@ -15,8 +15,8 @@ func TestWrapRemoteErr_Multiline(t *testing.T) {
   Commits only local:
     abc def
 
-  Resolve, then re-run:
-    git switch wms-batching && git reset --hard origin/wms-batching
+  If you just restacked/synced, local is intentional — publish it:
+    git push --force-with-lease origin wms-batching
 `
 	err := wrapRemoteErr("fix 'wms-batching' vs origin before restacking", fmt.Errorf("%s", play))
 	if err == nil {
